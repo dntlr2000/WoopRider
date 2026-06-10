@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 702070af7d4c40b29de99ca60d0963c2, type: 3}
+  m_Name: BasicBlaster
+  m_EditorClassIdentifier: 
+  equipmentId: basic_blaster
+  displayName: Basic Blaster
+  canAttack: 1
+  canCollectItems: 1
+  statModifiers: []
+  attack:
+    attackMode: 0
+    shotsPerSecondOverride: 0
+    damageMultiplier: 1
+    range: 100
+    projectileSpeed: 32
+    projectileRadius: 0.12
+    projectileLifeTime: 4
+  visualPrefab: {fileID: 0}
