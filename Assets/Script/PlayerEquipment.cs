@@ -8,11 +8,13 @@ public class PlayerEquipment : MonoBehaviour
 
     private EquipmentDefinition currentEquipment;
     private NetworkPlayerEquipmentState networkState;
+    private NetworkPlayerCombatState combatState;
 
     public EquipmentDefinition CurrentEquipment => currentEquipment;
     public bool HasEquipment => currentEquipment != null;
-    public bool CanAttack => currentEquipment != null && currentEquipment.CanAttack;
-    public bool CanCollectItems => currentEquipment != null && currentEquipment.CanCollectItems;
+    public bool CanAct => combatState == null || !combatState.IsActionDisabled;
+    public bool CanAttack => CanAct && currentEquipment != null && currentEquipment.CanAttack;
+    public bool CanCollectItems => CanAct && currentEquipment != null && currentEquipment.CanCollectItems;
 
     private void Awake()
     {
@@ -27,10 +29,13 @@ public class PlayerEquipment : MonoBehaviour
     {
         // Keep the local player equipment view aligned with the owned network equipment state.
         networkState = state;
-        if (networkState != null && networkState.CurrentEquipment != null)
-        {
-            Equip(networkState.CurrentEquipment);
-        }
+        Equip(networkState != null ? networkState.CurrentEquipment : null);
+    }
+
+    public void BindCombatState(NetworkPlayerCombatState state)
+    {
+        // Store the local combat state mirror so action-disabled state can block input.
+        combatState = state;
     }
 
     public void Equip(EquipmentDefinition equipment)

@@ -12,9 +12,11 @@ public class PlayerStatsPanelToggle : MonoBehaviour
 
     [Header("Text")]
     [SerializeField] private string titleText = "Collected Stats";
+    [SerializeField] private string noEquipmentText = "None";
     [SerializeField] private string offlineText = "Not connected.";
     [SerializeField] private string notReadyText = "Stats are not ready.";
 
+    private PlayerEquipment localEquipment;
     private bool isVisible;
     private string lastRenderedText;
 
@@ -113,6 +115,7 @@ public class PlayerStatsPanelToggle : MonoBehaviour
             entry.FireRate;
 
         return $"{titleText}\n" +
+            $"{GetCurrentEquipmentText()}\n" +
             $"Total: {total}\n" +
             $"Move Speed: {entry.MoveSpeed}\n" +
             $"Jump Force: {entry.JumpForce}\n" +
@@ -121,5 +124,22 @@ public class PlayerStatsPanelToggle : MonoBehaviour
             $"Defense: {entry.Defense}\n" +
             $"Attack Power: {entry.AttackPower}\n" +
             $"Fire Rate: {entry.FireRate}";
+    }
+
+    private string GetCurrentEquipmentText()
+    {
+        // Resolve the local player's current equipment display name for the temporary stats panel.
+        if (localEquipment == null)
+        {
+            localEquipment = FindFirstObjectByType<PlayerEquipment>();
+        }
+
+        EquipmentDefinition equipment = localEquipment != null ? localEquipment.CurrentEquipment : null;
+        if (equipment == null)
+        {
+            return noEquipmentText;
+        }
+
+        return string.IsNullOrWhiteSpace(equipment.DisplayName) ? equipment.EquipmentId : equipment.DisplayName;
     }
 }

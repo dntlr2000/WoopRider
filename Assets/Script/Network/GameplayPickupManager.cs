@@ -129,6 +129,8 @@ public class GameplayPickupManager : NetworkBehaviour
                 break;
             case NetworkMatchState.MatchMain:
                 ClearAllPickups();
+                NetworkPlayerEquipmentState.EquipDefaultForAll();
+                NetworkPlayerCombatState.ResetForMatchStartForAll();
                 statsState?.ResetStats();
                 SpawnMainMatchPickups();
                 break;
@@ -137,6 +139,8 @@ public class GameplayPickupManager : NetworkBehaviour
                 break;
             case NetworkMatchState.FinalMatch:
                 ClearAllPickups();
+                List<ulong> restoredClientIds = NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
+                NetworkPlayerCombatState.ResetForClients(restoredClientIds);
                 SpawnFinalObjective();
                 break;
             case NetworkMatchState.Result:

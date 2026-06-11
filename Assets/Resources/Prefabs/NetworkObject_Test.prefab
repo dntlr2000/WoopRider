@@ -16,6 +16,7 @@ GameObject:
   - component: {fileID: 2379344657417324593}
   - component: {fileID: 912984637251480236}
   - component: {fileID: 6591308745321024430}
+  - component: {fileID: 7177280127912845321}
   m_Layer: 0
   m_Name: NetworkObject_Test
   m_TagString: Untagged
@@ -199,6 +200,7 @@ MonoBehaviour:
   positionSendThreshold: 0.02
   rotationSendThreshold: 1
   hideOwnerVisual: 1
+  fallbackAttackDamage: 20
 --- !u!114 &6591308745321024430
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -212,3 +214,17 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   defaultEquipment: {fileID: 11400000, guid: 2107929d80454811a91cbb9480a9c10a, type: 2}
+--- !u!114 &7177280127912845321
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1198843954560851932}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6c5558f447d9472dab1cc38745a7f63d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  defaultMaxHealth: 100
+  equipmentBreakActionLockDuration: 3

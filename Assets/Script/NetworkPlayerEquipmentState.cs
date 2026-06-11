@@ -18,8 +18,8 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
 
     public EquipmentDefinition CurrentEquipment => EquipmentCatalog.Get(equippedEquipmentId.Value.ToString());
     public bool HasEquipment => CurrentEquipment != null;
-    public bool CanAttack => CurrentEquipment != null && CurrentEquipment.CanAttack;
-    public bool CanCollectItems => CurrentEquipment != null && CurrentEquipment.CanCollectItems;
+    public bool CanAttack => NetworkPlayerCombatState.ClientCanAct(OwnerClientId) && CurrentEquipment != null && CurrentEquipment.CanAttack;
+    public bool CanCollectItems => NetworkPlayerCombatState.ClientCanAct(OwnerClientId) && CurrentEquipment != null && CurrentEquipment.CanCollectItems;
 
     public override void OnNetworkSpawn()
     {
@@ -56,6 +56,23 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
         equippedEquipmentId.Value = equipment.EquipmentId;
     }
 
+    public void EquipDefault()
+    {
+        // Server-side helper for restoring the player's default starting equipment.
+        Equip(defaultEquipment);
+    }
+
+    public void Unequip()
+    {
+        // Server-side unequip entry point that leaves the player without health-bearing equipment.
+        if (!IsServer)
+        {
+            return;
+        }
+
+        equippedEquipmentId.Value = default;
+    }
+
     public static bool ClientCanCollectItems(ulong clientId)
     {
         // Check whether the requested client currently has equipment that can collect items.
@@ -68,6 +85,35 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
         // Check whether the requested client currently has equipment that can attack.
         return StatesByClientId.TryGetValue(clientId, out NetworkPlayerEquipmentState state) &&
             state.CanAttack;
+    }
+
+    public static void EquipDefaultForAll()
+    {
+        // Restore default equipment for every connected player on the server.
+        foreach (NetworkPlayerEquipmentState state in StatesByClientId.Values)
+        {
+            if (state != null && state.IsServer)
+            {
+                state.EquipDefault();
+            }
+        }
+    }
+
+    public static List<ulong> EquipDefaultForUnequippedAll()
+    {
+        // Restore default equipment only for players whose equipment was broken or removed.
+        List<ulong> restoredClientIds = new();
+        foreach (NetworkPlayerEquipmentState state in StatesByClientId.Values)
+        {
+            if (state != null && state.IsServer && !state.HasEquipment)
+            {
+                state.EquipDefault();
+                restoredClientIds.Add(state.OwnerClientId);
+                Debug.Log($"[NetworkPlayerEquipmentState] Default equipment restored for final match clientId={state.OwnerClientId}");
+            }
+        }
+
+        return restoredClientIds;
     }
 
     private void OnEquipmentIdChanged(FixedString64Bytes previous, FixedString64Bytes current)

@@ -20,11 +20,22 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     [Header("Owner Visual")]
     [SerializeField] private bool hideOwnerVisual = true;
 
+    [Header("Damage")]
+    [SerializeField] private float fallbackAttackDamage = 20f;
+
+    [Header("Server Attack Rules")]
+    [SerializeField] private bool requireActiveMatchForAttack = true;
+    [SerializeField] private float fallbackServerShotsPerSecond = 5f;
+    [SerializeField] private float serverAimOriginTolerance = 4f;
+    [SerializeField] private float fallbackTargetRadius = 0.75f;
+    [SerializeField] private float fallbackTargetHeight = 1.1f;
+
     private ThirdPersonController localController;
     private NetworkPlayerEquipmentState equipmentState;
     private Renderer[] renderers;
     private Collider[] colliders;
     private float nextSendTime;
+    private float nextServerAttackTime;
     private Vector3 lastSentPosition;
     private Quaternion lastSentRotation = Quaternion.identity;
 
@@ -85,6 +96,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
         if (IsServer)
         {
+            if (!TryApproveServerProjectile(ref packet, attackSettings, "local-server"))
+            {
+                return false;
+            }
+
+            TryApplyProjectileDamage(packet, attackSettings);
             SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
             return true;
         }
@@ -171,6 +188,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
+        if (!TryApproveServerProjectile(ref packet, attackSettings, $"client={rpcParams.Receive.SenderClientId}"))
+        {
+            return;
+        }
+
+        TryApplyProjectileDamage(packet, attackSettings);
         SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
     }
 
@@ -227,7 +250,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return !requireResolvedEquipment;
         }
 
-        if (!equipment.CanAttack ||
+        if (!equipmentState.CanAttack ||
             equipment.Attack == null ||
             equipment.Attack.AttackMode != EquipmentAttackMode.Projectile)
         {
@@ -258,6 +281,252 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         speed = attackSettings.ProjectileSpeed > 0f ? attackSettings.ProjectileSpeed : speed;
         radius = attackSettings.ProjectileRadius > 0f ? attackSettings.ProjectileRadius : radius;
         lifeTime = attackSettings.ProjectileLifeTime > 0f ? attackSettings.ProjectileLifeTime : lifeTime;
+    }
+
+    private bool TryApproveServerProjectile(ref ProjectilePacket packet, EquipmentAttackSettings attackSettings, string requesterLabel)
+    {
+        // Server-side gate for match state, attack rate, and client-provided aim origin.
+        if (!IsServer)
+        {
+            return false;
+        }
+
+        if (!CanAttackInCurrentMatchState(out NetworkMatchState currentState))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected projectile outside attack state owner={OwnerClientId} requester={requesterLabel} state={currentState}");
+            return false;
+        }
+
+        if (!TryConsumeServerAttackCooldown(attackSettings, out float cooldownRemaining))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected projectile cooldown owner={OwnerClientId} requester={requesterLabel} remaining={cooldownRemaining:0.00}s");
+            return false;
+        }
+
+        ApplyServerAimOriginCorrection(ref packet);
+        return true;
+    }
+
+    private bool CanAttackInCurrentMatchState(out NetworkMatchState currentState)
+    {
+        // Restrict PvP attacks to active gameplay states unless this rule is disabled for testing.
+        currentState = NetworkMatchState.Lobby;
+        if (!requireActiveMatchForAttack)
+        {
+            return true;
+        }
+
+        MatchStateController controller = MatchStateController.Instance;
+        if (controller == null || !controller.IsSpawned)
+        {
+            return false;
+        }
+
+        currentState = controller.State.Value;
+        return currentState == NetworkMatchState.MatchMain ||
+            currentState == NetworkMatchState.FinalMatch;
+    }
+
+    private bool TryConsumeServerAttackCooldown(EquipmentAttackSettings attackSettings, out float cooldownRemaining)
+    {
+        // Use server time to prevent clients from bypassing the effective fire-rate limit.
+        cooldownRemaining = nextServerAttackTime - Time.time;
+        if (cooldownRemaining > 0f)
+        {
+            return false;
+        }
+
+        float shotsPerSecond = GetServerShotsPerSecond(attackSettings);
+        nextServerAttackTime = Time.time + 1f / shotsPerSecond;
+        cooldownRemaining = 0f;
+        return true;
+    }
+
+    private float GetServerShotsPerSecond(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve the server-side fire rate from equipment data with a safe fallback.
+        if (attackSettings != null && attackSettings.ShotsPerSecondOverride > 0f)
+        {
+            return Mathf.Max(0.1f, attackSettings.ShotsPerSecondOverride);
+        }
+
+        return Mathf.Max(0.1f, fallbackServerShotsPerSecond);
+    }
+
+    private void ApplyServerAimOriginCorrection(ref ProjectilePacket packet)
+    {
+        // Pull suspicious muzzle origins back near the server-known player position while preserving aim direction.
+        float tolerance = Mathf.Max(0f, serverAimOriginTolerance);
+        Vector3 serverOrigin = ResolveServerProjectileOrigin();
+        if (tolerance > 0f && (packet.Origin - serverOrigin).sqrMagnitude <= tolerance * tolerance)
+        {
+            return;
+        }
+
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return;
+        }
+
+        packet.Origin = serverOrigin;
+        packet.TargetPoint = serverOrigin + direction.normalized * distance;
+    }
+
+    private Vector3 ResolveServerProjectileOrigin()
+    {
+        // Estimate the authoritative muzzle point from the network avatar transform.
+        return transform.position + Vector3.up * Mathf.Max(0f, fallbackTargetHeight);
+    }
+
+    private void TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Server resolves a simple projectile-line hit so equipment health can break during PvP tests.
+        if (!IsServer || !TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint))
+        {
+            return;
+        }
+
+        float damageMultiplier = attackSettings != null ? Mathf.Max(0f, attackSettings.DamageMultiplier) : 1f;
+        float damage = fallbackAttackDamage * damageMultiplier;
+        if (damage <= 0f)
+        {
+            return;
+        }
+
+        if (targetCombatState.ApplyDamage(damage, OwnerClientId))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={hitPoint}");
+        }
+    }
+
+    private bool TryFindProjectileTarget(ProjectilePacket packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint)
+    {
+        // Find the nearest damageable network player before any blocking non-player collider.
+        targetCombatState = null;
+        hitPoint = default;
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return false;
+        }
+
+        RaycastHit[] hits = Physics.SphereCastAll(
+            packet.Origin,
+            packet.Radius,
+            direction.normalized,
+            distance,
+            ~0,
+            QueryTriggerInteraction.Ignore);
+
+        float nearestTargetDistance = float.MaxValue;
+        float nearestBlockDistance = float.MaxValue;
+        Vector3 nearestTargetPoint = default;
+        for (int i = 0; i < hits.Length; i++)
+        {
+            RaycastHit hit = hits[i];
+            if (hit.collider == null || hit.collider.GetComponentInParent<ThirdPersonController>() != null)
+            {
+                continue;
+            }
+
+            NetworkPlayerCombatState hitCombatState = hit.collider.GetComponentInParent<NetworkPlayerCombatState>();
+            if (hitCombatState != null)
+            {
+                if (hitCombatState.OwnerClientId == OwnerClientId)
+                {
+                    continue;
+                }
+
+                if (hit.distance < nearestTargetDistance)
+                {
+                    nearestTargetDistance = hit.distance;
+                    nearestTargetPoint = hit.point;
+                    targetCombatState = hitCombatState;
+                }
+
+                continue;
+            }
+
+            if (hit.distance < nearestBlockDistance)
+            {
+                nearestBlockDistance = hit.distance;
+            }
+        }
+
+        if (TryFindFallbackTransformTarget(packet, direction.normalized, distance, nearestBlockDistance, ref targetCombatState, ref nearestTargetDistance, ref nearestTargetPoint))
+        {
+            hitPoint = nearestTargetPoint;
+            return true;
+        }
+
+        if (targetCombatState != null && nearestTargetDistance <= nearestBlockDistance)
+        {
+            hitPoint = nearestTargetPoint;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryFindFallbackTransformTarget(ProjectilePacket packet, Vector3 direction, float distance, float nearestBlockDistance, ref NetworkPlayerCombatState targetCombatState, ref float nearestTargetDistance, ref Vector3 nearestTargetPoint)
+    {
+        // Also test network avatar positions so host-hidden colliders or missing colliders can still be hit.
+        NetworkPlayerCombatState[] combatStates = FindObjectsByType<NetworkPlayerCombatState>(FindObjectsSortMode.None);
+        float radius = Mathf.Max(packet.Radius, fallbackTargetRadius);
+        for (int i = 0; i < combatStates.Length; i++)
+        {
+            NetworkPlayerCombatState candidate = combatStates[i];
+            if (candidate == null || !candidate.IsSpawned || candidate.OwnerClientId == OwnerClientId)
+            {
+                continue;
+            }
+
+            if (!TryIntersectTargetCapsule(packet.Origin, direction, distance, candidate.transform.position, radius, out float candidateDistance, out Vector3 candidatePoint))
+            {
+                continue;
+            }
+
+            if (candidateDistance < nearestTargetDistance && candidateDistance <= nearestBlockDistance)
+            {
+                nearestTargetDistance = candidateDistance;
+                nearestTargetPoint = candidatePoint;
+                targetCombatState = candidate;
+            }
+        }
+
+        return targetCombatState != null && nearestTargetDistance <= nearestBlockDistance;
+    }
+
+    private bool TryIntersectTargetCapsule(Vector3 origin, Vector3 direction, float distance, Vector3 targetPosition, float radius, out float hitDistance, out Vector3 hitPoint)
+    {
+        // Approximate a player body with a short vertical capsule for collider-independent server hit checks.
+        hitDistance = 0f;
+        hitPoint = default;
+
+        Vector3 bottom = targetPosition;
+        Vector3 top = targetPosition + Vector3.up * Mathf.Max(0f, fallbackTargetHeight);
+        float bottomDistance = DistanceFromRaySegment(origin, direction, bottom, distance, out float bottomAlongRay);
+        float topDistance = DistanceFromRaySegment(origin, direction, top, distance, out float topAlongRay);
+
+        if (bottomDistance > radius && topDistance > radius)
+        {
+            return false;
+        }
+
+        hitDistance = bottomDistance <= topDistance ? bottomAlongRay : topAlongRay;
+        hitPoint = origin + direction * hitDistance;
+        return true;
+    }
+
+    private static float DistanceFromRaySegment(Vector3 origin, Vector3 direction, Vector3 point, float maxDistance, out float alongRay)
+    {
+        // Measure the shortest distance from a point to the finite projectile path.
+        alongRay = Mathf.Clamp(Vector3.Dot(point - origin, direction), 0f, maxDistance);
+        Vector3 closestPoint = origin + direction * alongRay;
+        return Vector3.Distance(point, closestPoint);
     }
 
     private static bool TrySanitizeProjectile(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, out ProjectilePacket packet)

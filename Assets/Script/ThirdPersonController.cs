@@ -80,6 +80,12 @@ public class ThirdPersonController : MonoBehaviour
     private void HandleMovement()
     {
         // Apply camera-yaw-relative movement, gravity, and jumping.
+        if (equipment != null && !equipment.CanAct)
+        {
+            HandleActionDisabledMovement();
+            return;
+        }
+
         Vector2 moveInput = GetMoveInput();
         float horizontal = moveInput.x;
         float vertical = moveInput.y;
@@ -118,6 +124,18 @@ public class ThirdPersonController : MonoBehaviour
         velocity.y = verticalVelocity;
 
         controller.Move(velocity * Time.deltaTime);
+    }
+
+    private void HandleActionDisabledMovement()
+    {
+        // Keep gravity active while preventing movement and jump input during action lock.
+        if (controller.isGrounded && verticalVelocity < 0f)
+        {
+            verticalVelocity = -2f;
+        }
+
+        verticalVelocity += gravity * Time.deltaTime;
+        controller.Move(Vector3.up * verticalVelocity * Time.deltaTime);
     }
 
     private Quaternion GetCameraYawRotation()

@@ -77,7 +77,8 @@ public class PlayerProjectileShooter : MonoBehaviour
         float resolvedProjectileRadius = GetProjectileRadius(attackSettings);
         float resolvedProjectileLifeTime = GetProjectileLifeTime(attackSettings);
 
-        if (TrySendNetworkProjectile(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime))
+        if (TrySendNetworkProjectile(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime, out bool usedNetworkPath) ||
+            usedNetworkPath)
         {
             return;
         }
@@ -155,15 +156,17 @@ public class PlayerProjectileShooter : MonoBehaviour
             cameraTransform.forward * muzzleCameraForwardOffset;
     }
 
-    private bool TrySendNetworkProjectile(Vector3 muzzlePosition, Vector3 aimPoint, float speed, float radius, float lifeTime)
+    private bool TrySendNetworkProjectile(Vector3 muzzlePosition, Vector3 aimPoint, float speed, float radius, float lifeTime, out bool usedNetworkPath)
     {
         // In multiplayer, relay the projectile request through the owned NetworkObject.
+        usedNetworkPath = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
         NetworkPlayerAvatarRelay relay = ResolveLocalRelay();
         if (relay == null)
         {
             return false;
         }
 
+        usedNetworkPath = true;
         return relay.RequestProjectileVisual(muzzlePosition, aimPoint, speed, radius, lifeTime);
     }
 
