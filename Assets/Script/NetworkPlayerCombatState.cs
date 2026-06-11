@@ -15,6 +15,12 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     [Header("Break State")]
     [SerializeField] private float equipmentBreakActionLockDuration = 3f;
 
+    [Header("Low Health Effect")]
+    [Range(0f, 1f)]
+    [SerializeField] private float lowHealthSparkThreshold = 0.2f;
+    [SerializeField] private Vector3 lowHealthSparkLocalOffset = new(0f, 1f, 0f);
+    [SerializeField] private float lowHealthSparkRate = 14f;
+
     private readonly NetworkVariable<float> currentHealth = new(
         0f,
         NetworkVariableReadPermission.Everyone,
@@ -32,10 +38,13 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private NetworkPlayerEquipmentState equipmentState;
     private Coroutine actionLockRoutine;
+    private ParticleSystem lowHealthSparkEffect;
     private bool hadEquipmentLastFrame;
 
     public float CurrentHealth => currentHealth.Value;
+    public float MaxHealth => ResolveMaxHealthForEquipment();
     public bool HasHealth => equipmentState != null && equipmentState.HasEquipment;
+    public float EquipmentHealthPercent => ResolveEquipmentHealthPercent();
     public bool IsInvincible => isInvincible.Value;
     public bool IsActionDisabled => isActionDisabled.Value;
 
@@ -45,6 +54,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         equipmentState = GetComponent<NetworkPlayerEquipmentState>();
         StatesByClientId[OwnerClientId] = this;
         hadEquipmentLastFrame = equipmentState != null && equipmentState.HasEquipment;
+        currentHealth.OnValueChanged += OnHealthChanged;
 
         if (IsServer)
         {
@@ -52,6 +62,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         }
 
         TryBindLocalPlayerEquipment();
+        UpdateLowHealthSparkEffect();
     }
 
     public override void OnNetworkDespawn()
@@ -67,10 +78,15 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             StopCoroutine(actionLockRoutine);
             actionLockRoutine = null;
         }
+
+        currentHealth.OnValueChanged -= OnHealthChanged;
+        DestroyLowHealthSparkEffect();
     }
 
     private void Update()
     {
+        UpdateLowHealthSparkEffect();
+
         // Server watches equipment transitions so health appears only while equipment is equipped.
         if (!IsServer)
         {
@@ -103,6 +119,25 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             BreakEquipmentAndDisableActions(attackerClientId);
         }
 
+        return true;
+    }
+
+    public bool HealByMaxHealthPercent(float maxHealthPercent, string sourceLabel)
+    {
+        // Consume a heal effect and restore equipment-backed health when there is missing health.
+        if (!IsServer ||
+            maxHealthPercent <= 0f ||
+            equipmentState == null ||
+            !equipmentState.HasEquipment ||
+            currentHealth.Value <= 0f)
+        {
+            return false;
+        }
+
+        float maxHealth = ResolveMaxHealthForEquipment();
+        float previousHealth = currentHealth.Value;
+        currentHealth.Value = Mathf.Min(maxHealth, currentHealth.Value + maxHealth * Mathf.Clamp01(maxHealthPercent));
+        Debug.Log($"[NetworkPlayerCombatState] Heal target={OwnerClientId} source={sourceLabel} amount={currentHealth.Value - previousHealth:0.0} health={currentHealth.Value:0.0}");
         return true;
     }
 
@@ -150,6 +185,27 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         TryBindLocalPlayerEquipment();
     }
 
+    public void ResetForEquipmentHealthPercent(float healthPercent)
+    {
+        // Restore combat flags and set health from the equipped drop's stored health ratio.
+        if (!IsServer)
+        {
+            return;
+        }
+
+        if (actionLockRoutine != null)
+        {
+            StopCoroutine(actionLockRoutine);
+            actionLockRoutine = null;
+        }
+
+        isInvincible.Value = false;
+        isActionDisabled.Value = false;
+        hadEquipmentLastFrame = equipmentState != null && equipmentState.HasEquipment;
+        ApplyEquipmentHealthPercent(healthPercent);
+        TryBindLocalPlayerEquipment();
+    }
+
     public static bool ClientCanAct(ulong clientId)
     {
         // Missing combat state defaults to true so older/offline objects keep working.
@@ -162,6 +218,13 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         // Static lookup helper used by server-side attack resolution.
         return StatesByClientId.TryGetValue(targetClientId, out NetworkPlayerCombatState state) &&
             state.ApplyDamage(amount, attackerClientId);
+    }
+
+    public static bool TryHealPercent(ulong targetClientId, float maxHealthPercent)
+    {
+        // Static lookup helper used by server-side functional pickup resolution.
+        return StatesByClientId.TryGetValue(targetClientId, out NetworkPlayerCombatState state) &&
+            state.HealByMaxHealthPercent(maxHealthPercent, "pickup");
     }
 
     public static void ResetForMatchStartForAll()
@@ -190,6 +253,28 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         }
     }
 
+    public static float GetEquipmentHealthPercent(ulong clientId)
+    {
+        // Return the current equipment-backed health ratio for preserving swapped-out equipment state.
+        if (!StatesByClientId.TryGetValue(clientId, out NetworkPlayerCombatState state) || state == null)
+        {
+            return 1f;
+        }
+
+        return state.EquipmentHealthPercent;
+    }
+
+    public static void ResetClientForEquippedHealthPercent(ulong clientId, float healthPercent)
+    {
+        // Reset one client's combat state after equipping a drop that already has stored durability.
+        if (StatesByClientId.TryGetValue(clientId, out NetworkPlayerCombatState state) &&
+            state != null &&
+            state.IsServer)
+        {
+            state.ResetForEquipmentHealthPercent(healthPercent);
+        }
+    }
+
     private bool CanReceiveDamage()
     {
         // Unequipped players have no health, and invincible players ignore incoming damage.
@@ -204,11 +289,46 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         // Give health when equipment exists, otherwise clear health because unequipped players are not damageable.
         if (equipmentState != null && equipmentState.HasEquipment)
         {
-            currentHealth.Value = Mathf.Max(1f, defaultMaxHealth);
+            currentHealth.Value = ResolveMaxHealthForEquipment();
             return;
         }
 
         currentHealth.Value = 0f;
+    }
+
+    private void ApplyEquipmentHealthPercent(float healthPercent)
+    {
+        // Convert a stored equipment durability ratio into this player's current health value.
+        if (equipmentState != null && equipmentState.HasEquipment)
+        {
+            currentHealth.Value = Mathf.Max(1f, ResolveMaxHealthForEquipment() * Mathf.Clamp01(healthPercent));
+            return;
+        }
+
+        currentHealth.Value = 0f;
+    }
+
+    private float ResolveEquipmentHealthPercent()
+    {
+        // Calculate the current equipment durability ratio from networked health.
+        if (equipmentState == null || !equipmentState.HasEquipment)
+        {
+            return 0f;
+        }
+
+        return Mathf.Clamp01(currentHealth.Value / ResolveMaxHealthForEquipment());
+    }
+
+    private float ResolveMaxHealthForEquipment()
+    {
+        // Use the current equipment's Health modifier when deriving combat max health.
+        EquipmentDefinition equipment = equipmentState != null ? equipmentState.CurrentEquipment : null;
+        if (equipment == null)
+        {
+            return Mathf.Max(1f, defaultMaxHealth);
+        }
+
+        return Mathf.Max(1f, equipment.ModifyStat(PlayerStatType.Health, defaultMaxHealth));
     }
 
     private void BreakEquipmentAndDisableActions(ulong attackerClientId)
@@ -238,6 +358,122 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         isInvincible.Value = false;
         actionLockRoutine = null;
         TryBindLocalPlayerEquipment();
+    }
+
+    private void OnHealthChanged(float previousHealth, float currentHealthValue)
+    {
+        // React immediately when replicated health crosses the low-health visual threshold.
+        UpdateLowHealthSparkEffect();
+    }
+
+    private void UpdateLowHealthSparkEffect()
+    {
+        // Show or hide the local red spark effect based on the replicated equipment health ratio.
+        if (!IsClient)
+        {
+            return;
+        }
+
+        bool shouldShowSpark = ShouldShowLowHealthSpark();
+        if (shouldShowSpark)
+        {
+            EnsureLowHealthSparkEffect();
+            if (lowHealthSparkEffect != null && !lowHealthSparkEffect.isPlaying)
+            {
+                lowHealthSparkEffect.Play();
+            }
+
+            return;
+        }
+
+        if (lowHealthSparkEffect != null && lowHealthSparkEffect.isPlaying)
+        {
+            lowHealthSparkEffect.Stop(withChildren: true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        }
+    }
+
+    private bool ShouldShowLowHealthSpark()
+    {
+        // Low-health warning only applies while the player has damageable equipment-backed health.
+        if (equipmentState == null || !equipmentState.HasEquipment || currentHealth.Value <= 0f)
+        {
+            return false;
+        }
+
+        float maxHealth = ResolveMaxHealthForEquipment();
+        return maxHealth > 0f && currentHealth.Value / maxHealth < Mathf.Clamp01(lowHealthSparkThreshold);
+    }
+
+    private void EnsureLowHealthSparkEffect()
+    {
+        // Create a temporary red spark particle system until a dedicated damage-state VFX prefab exists.
+        if (lowHealthSparkEffect != null)
+        {
+            return;
+        }
+
+        GameObject sparkObject = new("LowHealthRedSparkEffect");
+        sparkObject.transform.SetParent(transform, false);
+        sparkObject.transform.localPosition = lowHealthSparkLocalOffset;
+
+        lowHealthSparkEffect = sparkObject.AddComponent<ParticleSystem>();
+        ConfigureLowHealthSparkEffect(lowHealthSparkEffect);
+    }
+
+    private void ConfigureLowHealthSparkEffect(ParticleSystem sparkEffect)
+    {
+        // Configure small red particles that pop around the damaged player at a steady warning rate.
+        ParticleSystem.MainModule main = sparkEffect.main;
+        main.loop = true;
+        main.playOnAwake = false;
+        main.simulationSpace = ParticleSystemSimulationSpace.Local;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.25f, 0.55f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(1.2f, 3f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.035f, 0.08f);
+        main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.02f, 0f, 1f), new Color(1f, 0.35f, 0.1f, 1f));
+
+        ParticleSystem.EmissionModule emission = sparkEffect.emission;
+        emission.rateOverTime = Mathf.Max(0f, lowHealthSparkRate);
+
+        ParticleSystem.ShapeModule shape = sparkEffect.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.55f;
+
+        ParticleSystem.ColorOverLifetimeModule colorOverLifetime = sparkEffect.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient fadeGradient = new();
+        fadeGradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(new Color(1f, 0.02f, 0f), 0f),
+                new GradientColorKey(new Color(1f, 0.35f, 0.1f), 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(1f, 0f),
+                new GradientAlphaKey(0f, 1f)
+            });
+        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(fadeGradient);
+
+        ParticleSystemRenderer renderer = sparkEffect.GetComponent<ParticleSystemRenderer>();
+        renderer.renderMode = ParticleSystemRenderMode.Billboard;
+        Shader particleShader = Shader.Find("Sprites/Default");
+        if (particleShader != null)
+        {
+            renderer.material = new Material(particleShader);
+        }
+    }
+
+    private void DestroyLowHealthSparkEffect()
+    {
+        // Clean up the generated warning effect when the network player despawns.
+        if (lowHealthSparkEffect == null)
+        {
+            return;
+        }
+
+        Destroy(lowHealthSparkEffect.gameObject);
+        lowHealthSparkEffect = null;
     }
 
     private void TryBindLocalPlayerEquipment()

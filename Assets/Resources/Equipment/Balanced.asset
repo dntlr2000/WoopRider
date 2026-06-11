@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 702070af7d4c40b29de99ca60d0963c2, type: 3}
+  m_Name: Balanced
+  m_EditorClassIdentifier: 
+  equipmentId: balanced
+  displayName: Balanced
+  canAttack: 1
+  canCollectItems: 1
+  statModifiers:
+  - statType: 0
+    flatBonus: 0
+    multiplier: 0.8
+  - statType: 1
+    flatBonus: 0
+    multiplier: 0.8
+  - statType: 3
+    flatBonus: 0
+    multiplier: 1.5
+  - statType: 4
+    flatBonus: 0
+    multiplier: 1.5
+  attack:
+    attackMode: 0
+    shotsPerSecondOverride: 6.5
+    damageMultiplier: 1
+    range: 100
+    projectileSpeed: 41.6
+    projectileRadius: 0.12
+    projectileLifeTime: 4
+  visualPrefab: {fileID: 0}

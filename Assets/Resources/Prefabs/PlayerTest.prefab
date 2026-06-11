@@ -16,6 +16,7 @@ GameObject:
   - component: {fileID: 8857753204982048550}
   - component: {fileID: 6041382507361493921}
   - component: {fileID: 7183815542108392017}
+  - component: {fileID: 6624792804768108123}
   m_Layer: 0
   m_Name: PlayerTest
   m_TagString: Untagged
@@ -202,4 +203,27 @@ MonoBehaviour:
   projectileRadius: 0.12
   projectileLifeTime: 4
   allowKeyboardFireKey: 1
+  ignoreMouseWhenPointerOverUi: 1
+--- !u!114 &6624792804768108123
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4695243963088308305}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a0e4cc3363847b38f4b7f0808f93d7e, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  aimCamera: {fileID: 0}
+  aimMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  maxHookDistance: 45
+  muzzleTransform: {fileID: 0}
+  muzzleHeight: 1.15
+  muzzleCameraRightOffset: 0.35
+  muzzleCameraForwardOffset: 0.55
+  hookCooldown: 0.35
   ignoreMouseWhenPointerOverUi: 1

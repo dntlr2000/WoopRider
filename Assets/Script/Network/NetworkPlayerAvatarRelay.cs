@@ -382,8 +382,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
-        // Server resolves a simple projectile-line hit so equipment health can break during PvP tests.
-        if (!IsServer || !TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint))
+        // Server resolves the nearest damageable target, including players and destructible boxes.
+        if (!IsServer)
         {
             return;
         }
@@ -395,17 +395,35 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
+        bool hitPlayer = TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 playerHitPoint, out float playerHitDistance);
+        bool hitBox = TryFindProjectileBoxTarget(packet, out int boxSlotId, out Vector3 boxHitPoint, out float boxHitDistance);
+        if (hitBox && (!hitPlayer || boxHitDistance <= playerHitDistance))
+        {
+            if (GameplayPickupManager.Instance != null && GameplayPickupManager.Instance.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId))
+            {
+                Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
+            }
+
+            return;
+        }
+
+        if (!hitPlayer)
+        {
+            return;
+        }
+
         if (targetCombatState.ApplyDamage(damage, OwnerClientId))
         {
-            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={hitPoint}");
+            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
         }
     }
 
-    private bool TryFindProjectileTarget(ProjectilePacket packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint)
+    private bool TryFindProjectileTarget(ProjectilePacket packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint, out float hitDistance)
     {
         // Find the nearest damageable network player before any blocking non-player collider.
         targetCombatState = null;
         hitPoint = default;
+        hitDistance = float.MaxValue;
         Vector3 direction = packet.TargetPoint - packet.Origin;
         float distance = direction.magnitude;
         if (distance <= 0.001f)
@@ -459,16 +477,40 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         if (TryFindFallbackTransformTarget(packet, direction.normalized, distance, nearestBlockDistance, ref targetCombatState, ref nearestTargetDistance, ref nearestTargetPoint))
         {
             hitPoint = nearestTargetPoint;
+            hitDistance = nearestTargetDistance;
             return true;
         }
 
         if (targetCombatState != null && nearestTargetDistance <= nearestBlockDistance)
         {
             hitPoint = nearestTargetPoint;
+            hitDistance = nearestTargetDistance;
             return true;
         }
 
         return false;
+    }
+
+    private bool TryFindProjectileBoxTarget(ProjectilePacket packet, out int boxSlotId, out Vector3 hitPoint, out float hitDistance)
+    {
+        // Ask the gameplay manager for the nearest destructible box along this projectile path.
+        boxSlotId = -1;
+        hitPoint = default;
+        hitDistance = float.MaxValue;
+        GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+        if (pickupManager == null)
+        {
+            return false;
+        }
+
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return false;
+        }
+
+        return pickupManager.TryFindDamageableBox(packet.Origin, direction.normalized, distance, packet.Radius, out boxSlotId, out hitDistance, out hitPoint);
     }
 
     private bool TryFindFallbackTransformTarget(ProjectilePacket packet, Vector3 direction, float distance, float nearestBlockDistance, ref NetworkPlayerCombatState targetCombatState, ref float nearestTargetDistance, ref Vector3 nearestTargetPoint)

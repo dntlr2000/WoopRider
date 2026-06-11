@@ -6,6 +6,7 @@ public static class EquipmentCatalog
     private const string EquipmentResourcesPath = "Equipment";
 
     private static Dictionary<string, EquipmentDefinition> definitionsById;
+    private static List<EquipmentDefinition> definitions;
 
     public static EquipmentDefinition Get(string equipmentId)
     {
@@ -27,6 +28,25 @@ public static class EquipmentCatalog
         return definition != null;
     }
 
+    public static IReadOnlyList<EquipmentDefinition> GetAll()
+    {
+        // Return the loaded equipment definitions so spawning systems can choose drop candidates.
+        EnsureLoaded();
+        return definitions;
+    }
+
+    public static EquipmentDefinition GetRandom()
+    {
+        // Choose a random equipment definition from Resources for temporary field drops.
+        EnsureLoaded();
+        if (definitions.Count == 0)
+        {
+            return null;
+        }
+
+        return definitions[Random.Range(0, definitions.Count)];
+    }
+
     private static void EnsureLoaded()
     {
         // Load all Resources/Equipment definitions once and index them by stable equipment id.
@@ -36,16 +56,18 @@ public static class EquipmentCatalog
         }
 
         definitionsById = new Dictionary<string, EquipmentDefinition>();
-        EquipmentDefinition[] definitions = Resources.LoadAll<EquipmentDefinition>(EquipmentResourcesPath);
-        for (int i = 0; i < definitions.Length; i++)
+        definitions = new List<EquipmentDefinition>();
+        EquipmentDefinition[] loadedDefinitions = Resources.LoadAll<EquipmentDefinition>(EquipmentResourcesPath);
+        for (int i = 0; i < loadedDefinitions.Length; i++)
         {
-            EquipmentDefinition definition = definitions[i];
+            EquipmentDefinition definition = loadedDefinitions[i];
             if (definition == null || string.IsNullOrWhiteSpace(definition.EquipmentId))
             {
                 continue;
             }
 
             definitionsById[definition.EquipmentId] = definition;
+            definitions.Add(definition);
         }
     }
 }

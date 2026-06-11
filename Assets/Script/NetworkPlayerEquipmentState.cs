@@ -87,6 +87,35 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
             state.CanAttack;
     }
 
+    public static bool TryEquipClient(ulong clientId, EquipmentDefinition equipment)
+    {
+        // Equip a specific client from server-side pickup or hook resolution.
+        if (equipment == null ||
+            !StatesByClientId.TryGetValue(clientId, out NetworkPlayerEquipmentState state) ||
+            state == null ||
+            !state.IsServer)
+        {
+            return false;
+        }
+
+        state.Equip(equipment);
+        Debug.Log($"[NetworkPlayerEquipmentState] Equipped clientId={clientId} equipment={equipment.EquipmentId}");
+        return true;
+    }
+
+    public static bool TryGetClientEquipment(ulong clientId, out EquipmentDefinition equipment)
+    {
+        // Look up a client's currently equipped definition without mutating equipment state.
+        equipment = null;
+        if (!StatesByClientId.TryGetValue(clientId, out NetworkPlayerEquipmentState state) || state == null)
+        {
+            return false;
+        }
+
+        equipment = state.CurrentEquipment;
+        return equipment != null;
+    }
+
     public static void EquipDefaultForAll()
     {
         // Restore default equipment for every connected player on the server.

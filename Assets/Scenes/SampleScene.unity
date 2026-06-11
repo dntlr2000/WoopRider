@@ -476,6 +476,7 @@ MonoBehaviour:
   statsText: {fileID: 967035379}
   startVisible: 0
   titleText: Collected Stats
+  noEquipmentText: None
   offlineText: Not connected.
   notReadyText: Stats are not ready.
 --- !u!1 &315291761
@@ -2877,9 +2878,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   ShowTopMostFoldoutHeaderGroup: 1
-  mainMatchDuration: 10
+  mainMatchDuration: 20
   finalTransitionDuration: 5
-  finalMatchDuration: 10
+  finalMatchDuration: 20
   State:
     UpdateTraits:
       MinSecondsBetweenUpdates: 0
@@ -2943,12 +2944,37 @@ MonoBehaviour:
   ShowTopMostFoldoutHeaderGroup: 1
   statPickupCount: 12
   statRespawnDelay: 5
+  equipmentPickupCount: 3
+  equipmentRespawnDelay: 12
+  equipmentSlotIdBase: 2000
+  lootPickupSlotIdBase: 5000
+  functionalPickupChance: 0.25
+  basicHealPercent: 0.2
+  boxItemCount: 3
+  boxSlotIdBase: 4000
+  boxRespawnDelay: 15
+  boxHitRadius: 1.2
+  boxTargetHeight: 1.2
+  boxLootScatterRadius: 1.4
+  basicBoxVisualResourcePath: fbx/Bangae_Statue
+  basicBoxVisualScale: {x: 1, y: 1, z: 1}
+  basicBoxMaxHealth: 100
+  basicBoxLootCount: 3
   finalObjectiveSlotIndex: 1000
   xRange: {x: -18, y: 18}
   zRange: {x: -18, y: 18}
   spawnY: 0.75
   collectRadius: 1.4
   scanInterval: 0.1
+  despawnLifetimeRange: {x: 15, y: 20}
+  despawnBlinkLeadTime: 2
+  despawnBlinkInterval: 0.15
+  hookRange: 45
+  hookSelectRadius: 0.75
+  hookPullSpeed: 40
+  hookEquipRadius: 1.1
+  hookServerCooldown: 0.5
+  hookOriginTolerance: 4
 --- !u!114 &1345942840
 MonoBehaviour:
   m_ObjectHideFlags: 0
