@@ -32,6 +32,8 @@ public class GameplayPickupManager : NetworkBehaviour
         public FunctionalPickupType FunctionalType;
         public string EquipmentId;
         public float EquipmentHealthPercent;
+        public float EquipmentCurrentHealth;
+        public float EquipmentMaxHealth;
         public Vector3 Position;
         public GameObject Visual;
         public PickupKind VisualKind;
@@ -39,7 +41,10 @@ public class GameplayPickupManager : NetworkBehaviour
         public Coroutine RespawnRoutine;
         public Coroutine HookRoutine;
         public Coroutine DespawnRoutine;
+        public Coroutine PhysicsRoutine;
         public Coroutine BlinkRoutine;
+        public ParticleSystem EquipmentLowHealthSparkEffect;
+        public Vector3 PhysicsVelocity;
         public bool Blinking;
     }
 
@@ -99,6 +104,33 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private Vector2 despawnLifetimeRange = new(15f, 20f);
     [SerializeField] private float despawnBlinkLeadTime = 2f;
     [SerializeField] private float despawnBlinkInterval = 0.15f;
+
+    [Header("Equipment Damage")]
+    [SerializeField] private float equipmentDropBaseHealth = 100f;
+    [SerializeField] private float equipmentHitRadius = 0.85f;
+    [SerializeField] private float equipmentTargetHeight = 0.35f;
+
+    [Header("Equipment Low Health Effect")]
+    [SerializeField] private ParticleSystem equipmentLowHealthSparkPrefab;
+    [Range(0f, 1f)]
+    [SerializeField] private float equipmentLowHealthSparkThreshold = 0.2f;
+    [SerializeField] private Vector3 equipmentLowHealthSparkLocalOffset = new(0f, 0.35f, 0f);
+    [SerializeField] private float equipmentLowHealthSparkRate = 16f;
+
+    [Header("Pickup Physics")]
+    [SerializeField] private bool enablePickupGravity = true;
+    [SerializeField] private LayerMask pickupGroundMask = ~0;
+    [SerializeField] private float pickupGravity = 18f;
+    [SerializeField] private float pickupRestHeight = 0.5f;
+    [SerializeField] private float pickupGroundRaycastHeight = 4f;
+    [SerializeField] private float pickupGroundRaycastDistance = 10f;
+    [SerializeField] private float pickupBounceDamping = 0.35f;
+    [SerializeField] private float pickupGroundFriction = 6f;
+    [SerializeField] private float pickupStopSpeed = 0.18f;
+    [SerializeField] private float pickupPhysicsSyncInterval = 0.05f;
+    [SerializeField] private float boxLootSpawnHeight = 1.1f;
+    [SerializeField] private Vector2 boxLootHorizontalSpeedRange = new(2.2f, 3.6f);
+    [SerializeField] private Vector2 boxLootUpwardSpeedRange = new(4.2f, 5.8f);
 
     [Header("Equipment Hook")]
     [SerializeField] private float hookRange = 45f;
@@ -257,6 +289,12 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void ActivateStatPickup(int slotId, PlayerStatType statType, Vector3 position, bool respawnOnCollect = true)
     {
+        // Activate a stat pickup with normal gravity and no launch impulse.
+        ActivateStatPickup(slotId, statType, position, respawnOnCollect, Vector3.zero);
+    }
+
+    private void ActivateStatPickup(int slotId, PlayerStatType statType, Vector3 position, bool respawnOnCollect, Vector3 initialVelocity)
+    {
         // 서버 슬롯 상태를 활성화하고 모든 클라이언트에 비주얼 표시를 요청.
         PickupSlot slot = GetOrCreateSlot(slotId);
         slot.Active = true;
@@ -270,6 +308,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         SetPickupVisualClientRpc(slotId, true, position, statType, PickupKind.Stat, default, FunctionalPickupType.None);
         StartPickupDespawnTimer(slotId);
+        StartPickupPhysics(slotId, initialVelocity);
     }
 
     private void ActivateRandomContactPickup(int slotId, Vector3 position, bool respawnOnCollect = true)
@@ -299,6 +338,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         SetPickupVisualClientRpc(slotId, true, position, slot.StatType, PickupKind.Functional, default, functionalType);
         StartPickupDespawnTimer(slotId);
+        StartPickupPhysics(slotId, Vector3.zero);
     }
 
     private void SpawnEquipmentPickups()
@@ -400,6 +440,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Position = position;
 
         SetPickupVisualClientRpc(slotId, true, position, slot.StatType, PickupKind.FinalObjective, default, FunctionalPickupType.None);
+        StartPickupPhysics(slotId, Vector3.zero);
     }
 
     private void ActivateEquipmentPickup(int slotId, EquipmentDefinition equipment, Vector3 position, float healthPercent = 1f)
@@ -418,11 +459,15 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.StatType = PlayerStatType.AttackPower;
         slot.FunctionalType = FunctionalPickupType.None;
         slot.EquipmentId = equipment.EquipmentId;
-        slot.EquipmentHealthPercent = Mathf.Clamp01(healthPercent);
+        slot.EquipmentMaxHealth = ResolveEquipmentDropMaxHealth(equipment);
+        slot.EquipmentCurrentHealth = Mathf.Max(0f, slot.EquipmentMaxHealth * Mathf.Clamp01(healthPercent));
+        slot.EquipmentHealthPercent = ResolveEquipmentHealthPercent(slot);
         slot.Position = position;
 
         SetPickupVisualClientRpc(slotId, true, position, slot.StatType, PickupKind.Equipment, new FixedString64Bytes(equipment.EquipmentId), FunctionalPickupType.None);
+        SetEquipmentHealthVisualClientRpc(slotId, slot.EquipmentHealthPercent);
         StartPickupDespawnTimer(slotId);
+        StartPickupPhysics(slotId, Vector3.zero);
     }
 
     private void DeactivatePickup(int slotId, bool stopDespawnTimer = true)
@@ -436,6 +481,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         slot.Active = false;
         slot.Hooked = false;
+        StopPickupPhysics(slot);
         SetPickupVisualClientRpc(slotId, false, Vector3.zero, slot.StatType, slot.Kind, new FixedString64Bytes(slot.EquipmentId ?? string.Empty), slot.FunctionalType);
     }
 
@@ -466,6 +512,7 @@ public class GameplayPickupManager : NetworkBehaviour
                 slot.DespawnRoutine = null;
             }
 
+            StopPickupPhysics(slot);
             SetPickupBlinkClientRpc(pair.Key, false);
             SetPickupVisualClientRpc(pair.Key, false, Vector3.zero, slot.StatType, slot.Kind, new FixedString64Bytes(slot.EquipmentId ?? string.Empty), slot.FunctionalType);
         }
@@ -562,7 +609,15 @@ public class GameplayPickupManager : NetworkBehaviour
             return;
         }
 
+        float previousMaxHealth = slot.StatType == PlayerStatType.Health
+            ? NetworkPlayerCombatState.GetMaxHealthForClient(clientId)
+            : 0f;
         statsState?.AddStat(clientId, slot.StatType, 1);
+        if (slot.StatType == PlayerStatType.Health)
+        {
+            NetworkPlayerCombatState.AddCurrentHealthForMaxHealthGain(clientId, previousMaxHealth);
+        }
+
         DeactivatePickup(slotId);
         ScheduleContactPickupRespawn(slotId, slot);
 
@@ -830,6 +885,7 @@ public class GameplayPickupManager : NetworkBehaviour
                 !slot.Active ||
                 slot.Hooked ||
                 slot.Kind != PickupKind.Equipment ||
+                slot.EquipmentCurrentHealth <= 0f ||
                 !EquipmentCatalog.TryGet(slot.EquipmentId, out _))
             {
                 continue;
@@ -850,13 +906,14 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Mark a contacted equipment drop as hooked and start pulling it toward the requesting player.
         PickupSlot slot = GetOrCreateSlot(slotId);
-        if (!slot.Active || slot.Kind != PickupKind.Equipment || slot.Hooked)
+        if (!slot.Active || slot.Kind != PickupKind.Equipment || slot.Hooked || slot.EquipmentCurrentHealth <= 0f)
         {
             return;
         }
 
         slot.Hooked = true;
         StopPickupDespawnTimer(slotId, syncBlink: true);
+        StopPickupPhysics(slot);
         if (slot.HookRoutine != null)
         {
             StopCoroutine(slot.HookRoutine);
@@ -883,6 +940,7 @@ public class GameplayPickupManager : NetworkBehaviour
                 slot.Hooked = false;
                 slot.HookRoutine = null;
                 StartPickupDespawnTimer(slotId);
+                StartPickupPhysics(slotId, Vector3.zero);
                 yield break;
             }
 
@@ -902,6 +960,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Hooked = false;
         slot.HookRoutine = null;
         StartPickupDespawnTimer(slotId);
+        StartPickupPhysics(slotId, Vector3.zero);
     }
 
     private void EquipHookedEquipment(int slotId, ulong clientId)
@@ -909,7 +968,7 @@ public class GameplayPickupManager : NetworkBehaviour
         // Swap the hooked equipment with the current one while preserving each equipment's health ratio.
         PickupSlot slot = GetOrCreateSlot(slotId);
         EquipmentDefinition incomingEquipment = EquipmentCatalog.Get(slot.EquipmentId);
-        float incomingHealthPercent = Mathf.Clamp01(slot.EquipmentHealthPercent);
+        float incomingHealthPercent = ResolveEquipmentHealthPercent(slot);
         NetworkPlayerEquipmentState.TryGetClientEquipment(clientId, out EquipmentDefinition previousEquipment);
         float previousHealthPercent = previousEquipment != null ?
             NetworkPlayerCombatState.GetEquipmentHealthPercent(clientId) :
@@ -924,6 +983,8 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             slot.Hooked = false;
             slot.HookRoutine = null;
+            StartPickupDespawnTimer(slotId);
+            StartPickupPhysics(slotId, Vector3.zero);
             return;
         }
 
@@ -1035,6 +1096,68 @@ public class GameplayPickupManager : NetworkBehaviour
         return true;
     }
 
+    public bool TryFindDamageableEquipment(Vector3 origin, Vector3 direction, float maxDistance, float projectileRadius, out int slotId, out float hitDistance, out Vector3 hitPoint)
+    {
+        // Find the nearest active field equipment drop touched by a server-approved projectile path.
+        slotId = -1;
+        hitDistance = float.MaxValue;
+        hitPoint = default;
+        if (!IsServer || direction.sqrMagnitude <= 0.0001f || maxDistance <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 normalizedDirection = direction.normalized;
+        float combinedRadius = Mathf.Max(0f, projectileRadius) + Mathf.Max(0.1f, equipmentHitRadius);
+        foreach (KeyValuePair<int, PickupSlot> pair in slots)
+        {
+            PickupSlot slot = pair.Value;
+            if (!IsDamageableEquipmentSlot(slot))
+            {
+                continue;
+            }
+
+            Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight);
+            float distanceToPath = DistanceFromRaySegment(origin, normalizedDirection, targetPoint, maxDistance, out float alongRay);
+            if (distanceToPath <= combinedRadius && alongRay < hitDistance)
+            {
+                slotId = pair.Key;
+                hitDistance = alongRay;
+                hitPoint = origin + normalizedDirection * alongRay;
+            }
+        }
+
+        return slotId >= 0;
+    }
+
+    public bool TryApplyEquipmentDamage(int slotId, float damage, ulong attackerClientId)
+    {
+        // Apply server-authoritative damage to a field equipment drop and destroy it at zero health.
+        if (!IsServer || damage <= 0f)
+        {
+            return false;
+        }
+
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        if (!IsDamageableEquipmentSlot(slot))
+        {
+            return false;
+        }
+
+        EnsureEquipmentDropHealth(slot);
+        slot.EquipmentCurrentHealth = Mathf.Max(0f, slot.EquipmentCurrentHealth - damage);
+        slot.EquipmentHealthPercent = ResolveEquipmentHealthPercent(slot);
+        SetEquipmentHealthVisualClientRpc(slotId, slot.EquipmentHealthPercent);
+        Debug.Log($"[GameplayPickupManager] Equipment damaged slot={slotId} attacker={attackerClientId} equipment={slot.EquipmentId} damage={damage:0.0} health={slot.EquipmentCurrentHealth:0.0}/{slot.EquipmentMaxHealth:0.0}");
+
+        if (slot.EquipmentCurrentHealth <= 0f)
+        {
+            DestroyEquipmentPickup(slotId, attackerClientId);
+        }
+
+        return true;
+    }
+
     private void BreakBoxItem(int slotId, ulong attackerClientId)
     {
         // Convert a destroyed box into its pre-selected stat loot and schedule a replacement box.
@@ -1045,7 +1168,12 @@ public class GameplayPickupManager : NetworkBehaviour
         DeactivateBoxItem(slotId);
         for (int i = 0; i < lootStats.Length; i++)
         {
-            ActivateStatPickup(GetNextLootPickupSlotId(), lootStats[i], ResolveBoxLootDropPosition(dropCenter, i, lootStats.Length), respawnOnCollect: false);
+            ActivateStatPickup(
+                GetNextLootPickupSlotId(),
+                lootStats[i],
+                ResolveBoxLootLaunchPosition(dropCenter),
+                respawnOnCollect: false,
+                initialVelocity: ResolveBoxLootLaunchVelocity(i, lootStats.Length));
         }
 
         if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
@@ -1084,20 +1212,27 @@ public class GameplayPickupManager : NetworkBehaviour
         return lootStats;
     }
 
-    private Vector3 ResolveBoxLootDropPosition(Vector3 center, int index, int count)
+    private Vector3 ResolveBoxLootLaunchPosition(Vector3 center)
     {
-        // Scatter box loot around the destroyed box so the spawned items are readable in play.
-        if (count <= 0)
-        {
-            return center;
-        }
+        // Start box loot slightly above the broken box so gravity can arc it outward.
+        return center + Vector3.up * Mathf.Max(0f, boxLootSpawnHeight);
+    }
 
-        float angle = (Mathf.PI * 2f * index / count) + Random.Range(-0.25f, 0.25f);
-        float radius = Random.Range(boxLootScatterRadius * 0.45f, boxLootScatterRadius);
-        Vector3 offset = new(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
-        Vector3 position = center + offset;
-        position.y = spawnY;
-        return position;
+    private Vector3 ResolveBoxLootLaunchVelocity(int index, int count)
+    {
+        // Give each box loot item a small outward-and-up impulse for a readable spill effect.
+        float angle = count > 0
+            ? (Mathf.PI * 2f * index / count) + Random.Range(-0.35f, 0.35f)
+            : Random.Range(0f, Mathf.PI * 2f);
+        float horizontalSpeed = Random.Range(
+            Mathf.Min(boxLootHorizontalSpeedRange.x, boxLootHorizontalSpeedRange.y),
+            Mathf.Max(boxLootHorizontalSpeedRange.x, boxLootHorizontalSpeedRange.y));
+        horizontalSpeed *= Mathf.Max(0.1f, boxLootScatterRadius) / 1.4f;
+        float upwardSpeed = Random.Range(
+            Mathf.Min(boxLootUpwardSpeedRange.x, boxLootUpwardSpeedRange.y),
+            Mathf.Max(boxLootUpwardSpeedRange.x, boxLootUpwardSpeedRange.y));
+        Vector3 horizontalDirection = new(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+        return horizontalDirection * Mathf.Max(0f, horizontalSpeed) + Vector3.up * Mathf.Max(0f, upwardSpeed);
     }
 
     private int GetNextLootPickupSlotId()
@@ -1289,6 +1424,208 @@ public class GameplayPickupManager : NetworkBehaviour
         return Random.Range(minLifetime, maxLifetime);
     }
 
+    private bool IsDamageableEquipmentSlot(PickupSlot slot)
+    {
+        // A field equipment drop can be damaged only while it is active, unhooked, and still has durability.
+        return slot != null &&
+            slot.Active &&
+            !slot.Hooked &&
+            slot.Kind == PickupKind.Equipment &&
+            (slot.EquipmentCurrentHealth > 0f || slot.EquipmentHealthPercent > 0f) &&
+            EquipmentCatalog.TryGet(slot.EquipmentId, out _);
+    }
+
+    private void EnsureEquipmentDropHealth(PickupSlot slot)
+    {
+        // Lazily restore missing drop health data from the equipment definition for older or reset slots.
+        if (slot == null || !EquipmentCatalog.TryGet(slot.EquipmentId, out EquipmentDefinition equipment))
+        {
+            return;
+        }
+
+        if (slot.EquipmentMaxHealth <= 0f)
+        {
+            slot.EquipmentMaxHealth = ResolveEquipmentDropMaxHealth(equipment);
+        }
+
+        if (slot.EquipmentCurrentHealth <= 0f && slot.EquipmentHealthPercent > 0f)
+        {
+            slot.EquipmentCurrentHealth = slot.EquipmentMaxHealth * Mathf.Clamp01(slot.EquipmentHealthPercent);
+        }
+
+        slot.EquipmentHealthPercent = ResolveEquipmentHealthPercent(slot);
+    }
+
+    private float ResolveEquipmentDropMaxHealth(EquipmentDefinition equipment)
+    {
+        // Field equipment health uses base player health with zero collected Health stacks and equipment modifiers only.
+        float baseHealth = Mathf.Max(1f, equipmentDropBaseHealth);
+        return equipment != null
+            ? Mathf.Max(1f, equipment.ModifyStat(PlayerStatType.Health, baseHealth))
+            : baseHealth;
+    }
+
+    private float ResolveEquipmentHealthPercent(PickupSlot slot)
+    {
+        // Convert field equipment durability back into the ratio used by equip and drop transitions.
+        if (slot == null || slot.EquipmentMaxHealth <= 0f)
+        {
+            return 1f;
+        }
+
+        return Mathf.Clamp01(slot.EquipmentCurrentHealth / slot.EquipmentMaxHealth);
+    }
+
+    private void DestroyEquipmentPickup(int slotId, ulong attackerClientId)
+    {
+        // Remove a destroyed field equipment drop and let the normal equipment respawn flow replace it.
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        string equipmentId = slot.EquipmentId;
+        DeactivatePickup(slotId);
+
+        if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
+        {
+            slot.RespawnRoutine = StartCoroutine(RespawnEquipmentPickupAfterDelay(slotId));
+        }
+
+        Debug.Log($"[GameplayPickupManager] Equipment destroyed slot={slotId} attacker={attackerClientId} equipment={equipmentId}");
+    }
+
+    private void StartPickupPhysics(int slotId, Vector3 initialVelocity)
+    {
+        // Start server-side lightweight physics so pickup visuals and collection checks share one position.
+        if (!IsServer || !enablePickupGravity)
+        {
+            return;
+        }
+
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        StopPickupPhysics(slot);
+        if (!slot.Active || slot.Hooked)
+        {
+            return;
+        }
+
+        slot.PhysicsVelocity = initialVelocity;
+        slot.PhysicsRoutine = StartCoroutine(SimulatePickupPhysics(slotId));
+    }
+
+    private void StopPickupPhysics(PickupSlot slot)
+    {
+        // Stop a pickup physics routine when the slot is hidden, hooked, or reset.
+        if (slot == null)
+        {
+            return;
+        }
+
+        if (slot.PhysicsRoutine != null)
+        {
+            StopCoroutine(slot.PhysicsRoutine);
+            slot.PhysicsRoutine = null;
+        }
+
+        slot.PhysicsVelocity = Vector3.zero;
+    }
+
+    private IEnumerator SimulatePickupPhysics(int slotId)
+    {
+        // Move one pickup under gravity, bounce it lightly on the ground, and sync the server slot position.
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        float syncTimer = 0f;
+        float stopSpeedSqr = pickupStopSpeed * pickupStopSpeed;
+
+        while (slot.Active && !slot.Hooked)
+        {
+            float deltaTime = Time.deltaTime;
+            if (deltaTime <= 0f)
+            {
+                yield return null;
+                continue;
+            }
+
+            Vector3 nextPosition = ResolveNextPickupPhysicsPosition(slot, deltaTime, out bool grounded);
+            slot.Position = nextPosition;
+
+            syncTimer += deltaTime;
+            if (syncTimer >= Mathf.Max(0.01f, pickupPhysicsSyncInterval))
+            {
+                syncTimer = 0f;
+                SyncPickupVisual(slotId, slot);
+            }
+
+            if (grounded && slot.PhysicsVelocity.sqrMagnitude <= stopSpeedSqr)
+            {
+                slot.PhysicsVelocity = Vector3.zero;
+                SyncPickupVisual(slotId, slot);
+                break;
+            }
+
+            yield return null;
+        }
+
+        slot.PhysicsRoutine = null;
+    }
+
+    private Vector3 ResolveNextPickupPhysicsPosition(PickupSlot slot, float deltaTime, out bool grounded)
+    {
+        // Advance a pickup by one frame and resolve a simple bounce against the detected ground height.
+        float gravity = -Mathf.Abs(pickupGravity);
+        float currentGroundY = ResolvePickupRestY(slot.Position);
+        bool wasGrounded = slot.Position.y <= currentGroundY + 0.01f && slot.PhysicsVelocity.y <= 0f;
+        if (!wasGrounded)
+        {
+            slot.PhysicsVelocity += Vector3.up * gravity * deltaTime;
+        }
+
+        Vector3 nextPosition = slot.Position + slot.PhysicsVelocity * deltaTime;
+        float nextGroundY = ResolvePickupRestY(nextPosition);
+        grounded = nextPosition.y <= nextGroundY;
+        if (!grounded)
+        {
+            return nextPosition;
+        }
+
+        nextPosition.y = nextGroundY;
+        if (slot.PhysicsVelocity.y < -pickupStopSpeed)
+        {
+            slot.PhysicsVelocity.y = -slot.PhysicsVelocity.y * Mathf.Clamp01(pickupBounceDamping);
+        }
+        else
+        {
+            slot.PhysicsVelocity.y = 0f;
+        }
+
+        slot.PhysicsVelocity = ApplyPickupGroundFriction(slot.PhysicsVelocity, deltaTime);
+        return nextPosition;
+    }
+
+    private float ResolvePickupRestY(Vector3 position)
+    {
+        // Find the nearest ground below a pickup and return the desired center height above it.
+        Vector3 rayOrigin = position + Vector3.up * Mathf.Max(0f, pickupGroundRaycastHeight);
+        float rayDistance = Mathf.Max(0.1f, pickupGroundRaycastHeight + pickupGroundRaycastDistance);
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, rayDistance, pickupGroundMask, QueryTriggerInteraction.Ignore))
+        {
+            return hit.point.y + Mathf.Max(0f, pickupRestHeight);
+        }
+
+        return spawnY;
+    }
+
+    private Vector3 ApplyPickupGroundFriction(Vector3 velocity, float deltaTime)
+    {
+        // Slow horizontal pickup movement after ground contact so bounced loot settles quickly.
+        Vector3 horizontalVelocity = new(velocity.x, 0f, velocity.z);
+        horizontalVelocity = Vector3.MoveTowards(horizontalVelocity, Vector3.zero, Mathf.Max(0f, pickupGroundFriction) * deltaTime);
+        return new Vector3(horizontalVelocity.x, velocity.y, horizontalVelocity.z);
+    }
+
+    private void SyncPickupVisual(int slotId, PickupSlot slot)
+    {
+        // Broadcast the current server pickup slot state to client-side temporary visuals.
+        SetPickupVisualClientRpc(slotId, slot.Active, slot.Position, slot.StatType, slot.Kind, new FixedString64Bytes(slot.EquipmentId ?? string.Empty), slot.FunctionalType);
+    }
+
     [ServerRpc(RequireOwnership = false)]
     private void RequestPickupServerRpc(int slotId, Vector3 reportedPlayerPosition, ServerRpcParams rpcParams = default)
     {
@@ -1398,6 +1735,10 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             PickupSlot slot = pair.Value;
             SetPickupVisualClientRpc(pair.Key, slot.Active, slot.Position, slot.StatType, slot.Kind, new FixedString64Bytes(slot.EquipmentId ?? string.Empty), slot.FunctionalType);
+            if (slot.Active && slot.Kind == PickupKind.Equipment)
+            {
+                SetEquipmentHealthVisualClientRpc(pair.Key, ResolveEquipmentHealthPercent(slot));
+            }
         }
 
         foreach (KeyValuePair<int, BoxSlot> pair in boxSlots)
@@ -1439,6 +1780,7 @@ public class GameplayPickupManager : NetworkBehaviour
         if (!active)
         {
             SetPickupBlink(slot, false);
+            SetEquipmentLowHealthSpark(slot, false);
             return;
         }
 
@@ -1453,6 +1795,17 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             renderer.material.color = GetPickupColor(statType, kind, slot.EquipmentId, slot.FunctionalType);
         }
+
+        UpdateEquipmentLowHealthSpark(slot);
+    }
+
+    [ClientRpc]
+    private void SetEquipmentHealthVisualClientRpc(int slotId, float healthPercent)
+    {
+        // Sync field equipment durability-dependent visual effects to every client.
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        slot.EquipmentHealthPercent = Mathf.Clamp01(healthPercent);
+        UpdateEquipmentLowHealthSpark(slot);
     }
 
     [ClientRpc]
@@ -1527,18 +1880,15 @@ public class GameplayPickupManager : NetworkBehaviour
 
         if (slot.Visual != null)
         {
+            SetEquipmentLowHealthSpark(slot, false);
+            slot.EquipmentLowHealthSparkEffect = null;
             Destroy(slot.Visual);
             slot.Visual = null;
         }
 
         GameObject visual = CreatePickupVisual(slot);
         visual.name = $"PickupVisual_{slotId}";
-
-        Collider collider = visual.GetComponent<Collider>();
-        if (collider != null)
-        {
-            Destroy(collider);
-        }
+        RemoveVisualColliders(visual);
 
         visual.SetActive(false);
         slot.Visual = visual;
@@ -1672,6 +2022,118 @@ public class GameplayPickupManager : NetworkBehaviour
         SetVisualRenderersVisible(slot.Visual, true);
     }
 
+    private void UpdateEquipmentLowHealthSpark(PickupSlot slot)
+    {
+        // Refresh the field equipment low-health spark based on the latest durability percent.
+        bool shouldShow = ShouldShowEquipmentLowHealthSpark(slot);
+        SetEquipmentLowHealthSpark(slot, shouldShow);
+    }
+
+    private bool ShouldShowEquipmentLowHealthSpark(PickupSlot slot)
+    {
+        // Show sparks only for visible field equipment that is close to being destroyed.
+        return slot != null &&
+            slot.Active &&
+            slot.Kind == PickupKind.Equipment &&
+            slot.Visual != null &&
+            slot.Visual.activeInHierarchy &&
+            slot.EquipmentHealthPercent > 0f &&
+            slot.EquipmentHealthPercent <= Mathf.Clamp01(equipmentLowHealthSparkThreshold);
+    }
+
+    private void SetEquipmentLowHealthSpark(PickupSlot slot, bool visible)
+    {
+        // Start or stop the field equipment low-health spark effect.
+        if (slot == null)
+        {
+            return;
+        }
+
+        if (!visible)
+        {
+            if (slot.EquipmentLowHealthSparkEffect != null && slot.EquipmentLowHealthSparkEffect.isPlaying)
+            {
+                slot.EquipmentLowHealthSparkEffect.Stop(withChildren: true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            }
+
+            return;
+        }
+
+        EnsureEquipmentLowHealthSparkEffect(slot);
+        if (slot.EquipmentLowHealthSparkEffect != null && !slot.EquipmentLowHealthSparkEffect.isPlaying)
+        {
+            slot.EquipmentLowHealthSparkEffect.Play();
+        }
+    }
+
+    private void EnsureEquipmentLowHealthSparkEffect(PickupSlot slot)
+    {
+        // Create or attach the low-health spark effect under the current equipment visual.
+        if (slot == null || slot.Visual == null || slot.EquipmentLowHealthSparkEffect != null)
+        {
+            return;
+        }
+
+        if (equipmentLowHealthSparkPrefab != null)
+        {
+            slot.EquipmentLowHealthSparkEffect = Instantiate(equipmentLowHealthSparkPrefab, slot.Visual.transform);
+            slot.EquipmentLowHealthSparkEffect.transform.localPosition = equipmentLowHealthSparkLocalOffset;
+            slot.EquipmentLowHealthSparkEffect.transform.localRotation = Quaternion.identity;
+            return;
+        }
+
+        GameObject sparkObject = new("EquipmentLowHealthRedSparkEffect");
+        sparkObject.transform.SetParent(slot.Visual.transform, false);
+        sparkObject.transform.localPosition = equipmentLowHealthSparkLocalOffset;
+
+        slot.EquipmentLowHealthSparkEffect = sparkObject.AddComponent<ParticleSystem>();
+        ConfigureEquipmentLowHealthSparkEffect(slot.EquipmentLowHealthSparkEffect);
+    }
+
+    private void ConfigureEquipmentLowHealthSparkEffect(ParticleSystem sparkEffect)
+    {
+        // Configure a temporary red spark until a dedicated field-equipment VFX prefab is assigned.
+        ParticleSystem.MainModule main = sparkEffect.main;
+        main.loop = true;
+        main.playOnAwake = false;
+        main.simulationSpace = ParticleSystemSimulationSpace.Local;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.18f, 0.45f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(1.5f, 3.8f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.035f, 0.09f);
+        main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0f, 0f, 1f), new Color(1f, 0.35f, 0.08f, 1f));
+
+        ParticleSystem.EmissionModule emission = sparkEffect.emission;
+        emission.rateOverTime = Mathf.Max(0f, equipmentLowHealthSparkRate);
+
+        ParticleSystem.ShapeModule shape = sparkEffect.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.45f;
+
+        ParticleSystem.ColorOverLifetimeModule colorOverLifetime = sparkEffect.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient fadeGradient = new();
+        fadeGradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(new Color(1f, 0f, 0f), 0f),
+                new GradientColorKey(new Color(1f, 0.35f, 0.08f), 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(1f, 0f),
+                new GradientAlphaKey(0f, 1f)
+            });
+        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(fadeGradient);
+
+        ParticleSystemRenderer renderer = sparkEffect.GetComponent<ParticleSystemRenderer>();
+        renderer.renderMode = ParticleSystemRenderMode.Billboard;
+        Shader particleShader = Shader.Find("Sprites/Default");
+        if (particleShader != null)
+        {
+            renderer.material = new Material(particleShader);
+        }
+    }
+
     private GameObject CreateBoxVisual()
     {
         // Load the current basic box model from Resources so no network prefab is required yet.
@@ -1687,6 +2149,7 @@ public class GameplayPickupManager : NetworkBehaviour
         Collider[] visualColliders = visual.GetComponentsInChildren<Collider>(includeInactive: true);
         for (int i = 0; i < visualColliders.Length; i++)
         {
+            visualColliders[i].enabled = false;
             Destroy(visualColliders[i]);
         }
     }

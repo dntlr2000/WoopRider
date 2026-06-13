@@ -212,12 +212,13 @@ public class ThirdPersonController : MonoBehaviour
 
     private float GetModifiedStat(PlayerStatType statType, float baseValue)
     {
-        // Let equipped items adjust controller stats without changing the serialized base values.
+        // Apply equipment modifiers first, then the replicated collected-stat bonus.
         if (equipment == null)
         {
             equipment = GetComponent<PlayerEquipment>();
         }
 
-        return equipment != null ? equipment.ModifyStat(statType, baseValue) : baseValue;
+        float equipmentModifiedValue = equipment != null ? equipment.ModifyStat(statType, baseValue) : baseValue;
+        return PlayerStatsState.ApplyLocalClientStatBonus(statType, equipmentModifiedValue);
     }
 }

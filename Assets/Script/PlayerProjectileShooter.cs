@@ -229,13 +229,16 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     private float GetShotsPerSecond(EquipmentAttackSettings attackSettings)
     {
-        // Prefer equipment attack override, then controller stat, then inspector fallback.
+        // Prefer equipment attack override, then controller stat, and apply collected FireRate stacks.
         if (attackSettings != null && attackSettings.ShotsPerSecondOverride > 0f)
         {
-            return Mathf.Max(0.1f, attackSettings.ShotsPerSecondOverride);
+            float equipmentFireRate = PlayerStatsState.ApplyLocalClientStatBonus(PlayerStatType.FireRate, attackSettings.ShotsPerSecondOverride);
+            return Mathf.Max(0.1f, equipmentFireRate);
         }
 
-        float statFireRate = controller != null ? controller.FireRate : fallbackShotsPerSecond;
+        float statFireRate = controller != null
+            ? controller.FireRate
+            : PlayerStatsState.ApplyLocalClientStatBonus(PlayerStatType.FireRate, fallbackShotsPerSecond);
         return Mathf.Max(0.1f, statFireRate > 0f ? statFireRate : fallbackShotsPerSecond);
     }
 

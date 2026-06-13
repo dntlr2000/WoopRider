@@ -33,11 +33,26 @@ public class ThirdPersonFollowCamera : MonoBehaviour
     private bool initializedAngles;
     private bool snappedToTarget;
 
+    public float MouseSensitivity => mouseSensitivity;
+
     private void Awake()
     {
         // Cache the Camera component and clamp the initial pitch.
         followCamera = GetComponent<Camera>();
         pitch = Mathf.Clamp(startPitch, minPitch, maxPitch);
+    }
+
+    private void OnEnable()
+    {
+        // Apply saved config and listen for runtime sensitivity changes.
+        GameConfigStore.MouseSensitivityChanged += SetMouseSensitivity;
+        SetMouseSensitivity(GameConfigStore.MouseSensitivity);
+    }
+
+    private void OnDisable()
+    {
+        // Stop listening when this camera is disabled or destroyed.
+        GameConfigStore.MouseSensitivityChanged -= SetMouseSensitivity;
     }
 
     private void Start()
@@ -103,6 +118,12 @@ public class ThirdPersonFollowCamera : MonoBehaviour
         yaw += lookInput.x * mouseSensitivity;
         pitch -= lookInput.y * mouseSensitivity;
         pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
+    }
+
+    public void SetMouseSensitivity(float value)
+    {
+        // Update the camera look multiplier from saved or live config values.
+        mouseSensitivity = Mathf.Clamp(value, GameConfigStore.MinMouseSensitivity, GameConfigStore.MaxMouseSensitivity);
     }
 
     private void FollowTargetYawWhenNeeded()

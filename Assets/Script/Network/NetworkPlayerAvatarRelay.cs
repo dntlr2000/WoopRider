@@ -344,13 +344,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private float GetServerShotsPerSecond(EquipmentAttackSettings attackSettings)
     {
-        // Resolve the server-side fire rate from equipment data with a safe fallback.
-        if (attackSettings != null && attackSettings.ShotsPerSecondOverride > 0f)
-        {
-            return Mathf.Max(0.1f, attackSettings.ShotsPerSecondOverride);
-        }
-
-        return Mathf.Max(0.1f, fallbackServerShotsPerSecond);
+        // Resolve server-side fire rate and apply collected FireRate stacks.
+        float equipmentFireRate = attackSettings != null && attackSettings.ShotsPerSecondOverride > 0f
+            ? attackSettings.ShotsPerSecondOverride
+            : fallbackServerShotsPerSecond;
+        float collectedFireRate = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.FireRate, equipmentFireRate);
+        return Mathf.Max(0.1f, collectedFireRate);
     }
 
     private void ApplyServerAimOriginCorrection(ref ProjectilePacket packet)
@@ -389,7 +388,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         float damageMultiplier = attackSettings != null ? Mathf.Max(0f, attackSettings.DamageMultiplier) : 1f;
-        float damage = fallbackAttackDamage * damageMultiplier;
+        float equipmentDamage = fallbackAttackDamage * damageMultiplier;
+        float damage = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.AttackPower, equipmentDamage);
         if (damage <= 0f)
         {
             return;
@@ -397,13 +397,24 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
         bool hitPlayer = TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 playerHitPoint, out float playerHitDistance);
         bool hitBox = TryFindProjectileBoxTarget(packet, out int boxSlotId, out Vector3 boxHitPoint, out float boxHitDistance);
-        if (hitBox && (!hitPlayer || boxHitDistance <= playerHitDistance))
+        bool hitEquipment = TryFindProjectileEquipmentTarget(packet, out int equipmentSlotId, out Vector3 equipmentHitPoint, out float equipmentHitDistance);
+        int nearestPickupKind = 0;
+        float nearestPickupDistance = float.MaxValue;
+        if (hitBox)
         {
-            if (GameplayPickupManager.Instance != null && GameplayPickupManager.Instance.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId))
-            {
-                Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
-            }
+            nearestPickupKind = 1;
+            nearestPickupDistance = boxHitDistance;
+        }
 
+        if (hitEquipment && equipmentHitDistance < nearestPickupDistance)
+        {
+            nearestPickupKind = 2;
+            nearestPickupDistance = equipmentHitDistance;
+        }
+
+        if (nearestPickupKind != 0 && (!hitPlayer || nearestPickupDistance <= playerHitDistance))
+        {
+            ApplyProjectilePickupDamage(nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
             return;
         }
 
@@ -415,6 +426,27 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         if (targetCombatState.ApplyDamage(damage, OwnerClientId))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
+        }
+    }
+
+    private void ApplyProjectilePickupDamage(int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
+    {
+        // Apply damage to the nearest server-managed pickup target hit by the projectile path.
+        GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+        if (pickupManager == null)
+        {
+            return;
+        }
+
+        if (pickupKind == 1 && pickupManager.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
+            return;
+        }
+
+        if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(equipmentSlotId, damage, OwnerClientId))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
         }
     }
 
@@ -511,6 +543,28 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         return pickupManager.TryFindDamageableBox(packet.Origin, direction.normalized, distance, packet.Radius, out boxSlotId, out hitDistance, out hitPoint);
+    }
+
+    private bool TryFindProjectileEquipmentTarget(ProjectilePacket packet, out int equipmentSlotId, out Vector3 hitPoint, out float hitDistance)
+    {
+        // Ask the gameplay manager for the nearest damageable field equipment along this projectile path.
+        equipmentSlotId = -1;
+        hitPoint = default;
+        hitDistance = float.MaxValue;
+        GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+        if (pickupManager == null)
+        {
+            return false;
+        }
+
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return false;
+        }
+
+        return pickupManager.TryFindDamageableEquipment(packet.Origin, direction.normalized, distance, packet.Radius, out equipmentSlotId, out hitDistance, out hitPoint);
     }
 
     private bool TryFindFallbackTransformTarget(ProjectilePacket packet, Vector3 direction, float distance, float nearestBlockDistance, ref NetworkPlayerCombatState targetCombatState, ref float nearestTargetDistance, ref Vector3 nearestTargetPoint)

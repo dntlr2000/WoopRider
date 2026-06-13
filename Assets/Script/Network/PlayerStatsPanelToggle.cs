@@ -10,6 +10,11 @@ public class PlayerStatsPanelToggle : MonoBehaviour
     [SerializeField] private TMP_Text statsText;
     [SerializeField] private bool startVisible = false;
 
+    [Header("Linked Submenu")]
+    [SerializeField] private GameObject[] submenuObjects = System.Array.Empty<GameObject>();
+    [SerializeField] private bool showSubmenuInLobby = true;
+    [SerializeField] private bool showSubmenuInResult = true;
+
     [Header("Text")]
     [SerializeField] private string titleText = "Collected Stats";
     [SerializeField] private string noEquipmentText = "None";
@@ -18,6 +23,8 @@ public class PlayerStatsPanelToggle : MonoBehaviour
 
     private PlayerEquipment localEquipment;
     private bool isVisible;
+    private bool hasLastSubmenuVisible;
+    private bool lastSubmenuVisible;
     private string lastRenderedText;
 
     private void Awake()
@@ -25,6 +32,7 @@ public class PlayerStatsPanelToggle : MonoBehaviour
         // 시작 시 Inspector 설정에 맞춰 스탯 패널 표시 상태를 초기화.
         isVisible = startVisible;
         SetPanelVisible(isVisible);
+        RefreshSubmenuVisibility(force: true);
     }
 
     private void Update()
@@ -34,6 +42,8 @@ public class PlayerStatsPanelToggle : MonoBehaviour
         {
             TogglePanel();
         }
+
+        RefreshSubmenuVisibility(force: false);
 
         if (isVisible)
         {
@@ -78,6 +88,62 @@ public class PlayerStatsPanelToggle : MonoBehaviour
         {
             RefreshStatsText();
         }
+
+        RefreshSubmenuVisibility(force: true);
+    }
+
+    private void RefreshSubmenuVisibility(bool force)
+    {
+        // Keep test-menu buttons visible in lobby/result, and otherwise tie them to the Tab submenu state.
+        bool shouldShow = ShouldShowSubmenu();
+        if (!force && hasLastSubmenuVisible && lastSubmenuVisible == shouldShow)
+        {
+            return;
+        }
+
+        for (int i = 0; i < submenuObjects.Length; i++)
+        {
+            if (submenuObjects[i] != null)
+            {
+                submenuObjects[i].SetActive(shouldShow);
+            }
+        }
+
+        hasLastSubmenuVisible = true;
+        lastSubmenuVisible = shouldShow;
+    }
+
+    private bool ShouldShowSubmenu()
+    {
+        // Tab always opens the linked test submenu; otherwise only non-combat states keep it visible.
+        return isVisible || ShouldShowSubmenuForCurrentMatchState();
+    }
+
+    private bool ShouldShowSubmenuForCurrentMatchState()
+    {
+        // Before connecting, treat the UI like lobby so connection buttons remain available.
+        if (Application.isBatchMode)
+        {
+            return false;
+        }
+
+        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
+        {
+            return showSubmenuInLobby;
+        }
+
+        MatchStateController controller = MatchStateController.Instance;
+        if (controller == null || !controller.IsSpawned)
+        {
+            return showSubmenuInLobby;
+        }
+
+        return controller.State.Value switch
+        {
+            NetworkMatchState.Lobby => showSubmenuInLobby,
+            NetworkMatchState.Result => showSubmenuInResult,
+            _ => false
+        };
     }
 
     private string BuildStatsText()

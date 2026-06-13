@@ -12,6 +12,9 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     [Header("Health")]
     [SerializeField] private float defaultMaxHealth = 100f;
 
+    [Header("Defense")]
+    [SerializeField] private float defaultDefense = 10f;
+
     [Header("Break State")]
     [SerializeField] private float equipmentBreakActionLockDuration = 3f;
 
@@ -111,8 +114,9 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             return false;
         }
 
-        currentHealth.Value = Mathf.Max(0f, currentHealth.Value - amount);
-        Debug.Log($"[NetworkPlayerCombatState] Damage target={OwnerClientId} attacker={attackerClientId} amount={amount:0.0} health={currentHealth.Value:0.0}");
+        float resolvedDamage = ResolveDamageAfterDefense(amount, out float defense);
+        currentHealth.Value = Mathf.Max(0f, currentHealth.Value - resolvedDamage);
+        Debug.Log($"[NetworkPlayerCombatState] Damage target={OwnerClientId} attacker={attackerClientId} raw={amount:0.0} defense={defense:0.0} amount={resolvedDamage:0.0} health={currentHealth.Value:0.0}");
 
         if (currentHealth.Value <= 0f)
         {
@@ -275,6 +279,28 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         }
     }
 
+    public static float GetMaxHealthForClient(ulong clientId)
+    {
+        // Return one client's current max health so stat pickups can compare before and after values.
+        if (!StatesByClientId.TryGetValue(clientId, out NetworkPlayerCombatState state) || state == null)
+        {
+            return 0f;
+        }
+
+        return state.MaxHealth;
+    }
+
+    public static void AddCurrentHealthForMaxHealthGain(ulong clientId, float previousMaxHealth)
+    {
+        // Increase current health by the max-health delta caused by a newly collected Health stat.
+        if (StatesByClientId.TryGetValue(clientId, out NetworkPlayerCombatState state) &&
+            state != null &&
+            state.IsServer)
+        {
+            state.AddCurrentHealthForMaxHealthGain(previousMaxHealth);
+        }
+    }
+
     private bool CanReceiveDamage()
     {
         // Unequipped players have no health, and invincible players ignore incoming damage.
@@ -319,16 +345,55 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         return Mathf.Clamp01(currentHealth.Value / ResolveMaxHealthForEquipment());
     }
 
-    private float ResolveMaxHealthForEquipment()
+    private void AddCurrentHealthForMaxHealthGain(float previousMaxHealth)
     {
-        // Use the current equipment's Health modifier when deriving combat max health.
-        EquipmentDefinition equipment = equipmentState != null ? equipmentState.CurrentEquipment : null;
-        if (equipment == null)
+        // Treat a max-health stat gain as a matching current-health increase.
+        if (!IsServer || equipmentState == null || !equipmentState.HasEquipment || currentHealth.Value <= 0f)
         {
-            return Mathf.Max(1f, defaultMaxHealth);
+            return;
         }
 
-        return Mathf.Max(1f, equipment.ModifyStat(PlayerStatType.Health, defaultMaxHealth));
+        float newMaxHealth = ResolveMaxHealthForEquipment();
+        float healthGain = Mathf.Max(0f, newMaxHealth - Mathf.Max(0f, previousMaxHealth));
+        if (healthGain <= 0f)
+        {
+            return;
+        }
+
+        float previousHealth = currentHealth.Value;
+        currentHealth.Value = Mathf.Min(newMaxHealth, currentHealth.Value + healthGain);
+        Debug.Log($"[NetworkPlayerCombatState] Max health gain target={OwnerClientId} gain={healthGain:0.0} health={previousHealth:0.0}->{currentHealth.Value:0.0} max={newMaxHealth:0.0}");
+    }
+
+    private float ResolveMaxHealthForEquipment()
+    {
+        // Apply equipment health first, then collected Health stack bonuses.
+        EquipmentDefinition equipment = equipmentState != null ? equipmentState.CurrentEquipment : null;
+        float equipmentModifiedHealth = equipment != null
+            ? equipment.ModifyStat(PlayerStatType.Health, defaultMaxHealth)
+            : defaultMaxHealth;
+
+        float collectedModifiedHealth = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.Health, equipmentModifiedHealth);
+        return Mathf.Max(1f, collectedModifiedHealth);
+    }
+
+    private float ResolveDefenseForEquipment()
+    {
+        // Apply equipment defense first, then collected Defense stack bonuses.
+        EquipmentDefinition equipment = equipmentState != null ? equipmentState.CurrentEquipment : null;
+        float equipmentModifiedDefense = equipment != null
+            ? equipment.ModifyStat(PlayerStatType.Defense, defaultDefense)
+            : defaultDefense;
+
+        return Mathf.Max(0f, PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.Defense, equipmentModifiedDefense));
+    }
+
+    private float ResolveDamageAfterDefense(float rawDamage, out float defense)
+    {
+        // Reduce incoming damage with a soft defense curve that never reaches full immunity.
+        defense = ResolveDefenseForEquipment();
+        float damageScale = 100f / (100f + defense);
+        return Mathf.Max(0.1f, rawDamage * damageScale);
     }
 
     private void BreakEquipmentAndDisableActions(ulong attackerClientId)

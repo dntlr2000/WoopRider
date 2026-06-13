@@ -15,7 +15,7 @@ public struct PlayerStatEntry : INetworkSerializable, IEquatable<PlayerStatEntry
 
     public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
     {
-        // NetworkList에서 클라이언트별 스탯 묶음을 직렬화/역직렬화.
+        // Serialize one client's accumulated stat stacks for NetworkList replication.
         serializer.SerializeValue(ref ClientId);
         serializer.SerializeValue(ref MoveSpeed);
         serializer.SerializeValue(ref JumpForce);
@@ -28,7 +28,7 @@ public struct PlayerStatEntry : INetworkSerializable, IEquatable<PlayerStatEntry
 
     public bool Equals(PlayerStatEntry other)
     {
-        // NetworkList 변경 감지를 위해 모든 스탯 필드가 같은지 비교.
+        // Compare every field so NetworkList can detect entry changes correctly.
         return ClientId == other.ClientId &&
             MoveSpeed == other.MoveSpeed &&
             JumpForce == other.JumpForce &&
@@ -42,13 +42,16 @@ public struct PlayerStatEntry : INetworkSerializable, IEquatable<PlayerStatEntry
 
 public class PlayerStatsState : NetworkBehaviour
 {
+    public const int MaxStacksPerStat = 15;
+    public const float BonusPerStack = 0.1f;
+
     public static PlayerStatsState Instance { get; private set; }
 
     public NetworkList<PlayerStatEntry> Stats { get; private set; }
 
     private void Awake()
     {
-        // 서버가 관리하는 클라이언트별 스탯 목록.
+        // Create the replicated stat list before Netcode spawns this object.
         Stats = new NetworkList<PlayerStatEntry>();
 
         if (Instance != null && Instance != this)
@@ -62,7 +65,7 @@ public class PlayerStatsState : NetworkBehaviour
 
     public override void OnNetworkSpawn()
     {
-        // 서버에서 접속자 이벤트를 구독하고 기존 접속자의 스탯 엔트리를 준비.
+        // On the server, prepare entries for already-connected clients and future joins.
         if (!IsServer || NetworkManager.Singleton == null)
         {
             return;
@@ -79,7 +82,7 @@ public class PlayerStatsState : NetworkBehaviour
 
     public override void OnNetworkDespawn()
     {
-        // 네트워크 오브젝트가 사라질 때 서버 콜백 구독을 해제.
+        // Remove server callbacks when the network object despawns.
         if (!IsServer || NetworkManager.Singleton == null)
         {
             return;
@@ -89,15 +92,21 @@ public class PlayerStatsState : NetworkBehaviour
         NetworkManager.Singleton.OnClientDisconnectCallback -= OnClientDisconnected;
     }
 
-    private void OnDestroy()
+    public override void OnDestroy()
     {
-        // NetworkList가 남긴 네이티브 리소스를 정리.
+        // Release the NetworkList container owned by this behaviour.
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+
         Stats?.Dispose();
+        base.OnDestroy();
     }
 
     public void ResetStats()
     {
-        // 새 경기 시작/룸 초기화 시 모든 누적 스탯을 비운다.
+        // Clear all accumulated stat stacks and recreate entries for connected clients.
         if (!IsServer)
         {
             return;
@@ -120,7 +129,7 @@ public class PlayerStatsState : NetworkBehaviour
 
     public void AddStat(ulong clientId, PlayerStatType statType, int amount)
     {
-        // 서버 판정으로 획득한 아이템만 스탯에 반영한다.
+        // Server-authoritatively add stat stacks while enforcing the per-stat cap.
         if (!IsServer)
         {
             return;
@@ -134,38 +143,24 @@ public class PlayerStatsState : NetworkBehaviour
         }
 
         PlayerStatEntry entry = Stats[index];
-        switch (statType)
+        int previousValue = GetStatValue(entry, statType);
+        int nextValue = ClampStackValue(previousValue + amount);
+        entry = SetStatValue(entry, statType, nextValue);
+        Stats[index] = entry;
+
+        int gainedAmount = nextValue - previousValue;
+        if (amount > 0 && gainedAmount <= 0)
         {
-            case PlayerStatType.MoveSpeed:
-                entry.MoveSpeed += amount;
-                break;
-            case PlayerStatType.JumpForce:
-                entry.JumpForce += amount;
-                break;
-            case PlayerStatType.Weight:
-                entry.Weight += amount;
-                break;
-            case PlayerStatType.Health:
-                entry.Health += amount;
-                break;
-            case PlayerStatType.Defense:
-                entry.Defense += amount;
-                break;
-            case PlayerStatType.AttackPower:
-                entry.AttackPower += amount;
-                break;
-            case PlayerStatType.FireRate:
-                entry.FireRate += amount;
-                break;
+            Debug.Log($"[PlayerStatsState] Client {clientId} {statType} already at cap {MaxStacksPerStat}.");
+            return;
         }
 
-        Stats[index] = entry;
-        Debug.Log($"[PlayerStatsState] Client {clientId} gained {statType} +{amount}");
+        Debug.Log($"[PlayerStatsState] Client {clientId} gained {statType} +{gainedAmount} ({nextValue}/{MaxStacksPerStat})");
     }
 
     public bool TryGetStats(ulong clientId, out PlayerStatEntry entry)
     {
-        // 특정 클라이언트의 현재 스탯 스냅샷을 조회.
+        // Find the current accumulated stat entry for a client.
         int index = FindIndex(clientId);
         if (index >= 0)
         {
@@ -177,9 +172,23 @@ public class PlayerStatsState : NetworkBehaviour
         return false;
     }
 
+    public int GetStackCount(ulong clientId, PlayerStatType statType)
+    {
+        // Return the clamped stack count for one stat on one client.
+        return TryGetStats(clientId, out PlayerStatEntry entry)
+            ? ClampStackValue(GetStatValue(entry, statType))
+            : 0;
+    }
+
+    public float GetStatMultiplier(ulong clientId, PlayerStatType statType)
+    {
+        // Convert collected stacks into the final bonus multiplier for a stat.
+        return 1f + GetStackCount(clientId, statType) * BonusPerStack;
+    }
+
     public void LogStatsSummary(string context)
     {
-        // 서버 로그에 현재 클라이언트별 스탯 누적치를 요약 출력.
+        // Print the current stat stacks for every tracked client.
         if (!IsServer)
         {
             return;
@@ -197,21 +206,57 @@ public class PlayerStatsState : NetworkBehaviour
         Debug.Log($"[PlayerStatsState] Stats summary end context='{context}'");
     }
 
+    public static float ApplyCollectedStatBonus(ulong clientId, PlayerStatType statType, float value)
+    {
+        // Apply the replicated collected-stat multiplier to an already equipment-modified value.
+        if (Instance == null)
+        {
+            return value;
+        }
+
+        return value * Instance.GetStatMultiplier(clientId, statType);
+    }
+
+    public static float ApplyLocalClientStatBonus(PlayerStatType statType, float value)
+    {
+        // Apply collected stats for the local client when a network session is active.
+        if (!TryGetLocalClientId(out ulong clientId))
+        {
+            return value;
+        }
+
+        return ApplyCollectedStatBonus(clientId, statType, value);
+    }
+
+    public static bool TryGetLocalClientId(out ulong clientId)
+    {
+        // Resolve the local Netcode client id used by local-only gameplay scripts.
+        clientId = 0;
+        NetworkManager manager = NetworkManager.Singleton;
+        if (manager == null || !manager.IsListening)
+        {
+            return false;
+        }
+
+        clientId = manager.LocalClientId;
+        return true;
+    }
+
     private void OnClientConnected(ulong clientId)
     {
-        // 새로 접속한 클라이언트의 스탯 엔트리를 보장.
+        // Ensure a stat entry exists as soon as a client joins.
         EnsurePlayer(clientId);
     }
 
     private void OnClientDisconnected(ulong clientId)
     {
-        // 결과 처리와 재접속 확장을 고려해 현재는 스탯을 즉시 삭제하지 않는다.
+        // Keep stat entries for summaries and result handling after disconnects.
         Debug.Log($"[PlayerStatsState] Client disconnected clientId={clientId}");
     }
 
     private void EnsurePlayer(ulong clientId)
     {
-        // 아직 스탯 엔트리가 없는 클라이언트만 새 엔트리를 추가.
+        // Add a zeroed stat entry only when this client is not already tracked.
         if (FindIndex(clientId) >= 0)
         {
             return;
@@ -223,7 +268,7 @@ public class PlayerStatsState : NetworkBehaviour
 
     private int FindIndex(ulong clientId)
     {
-        // NetworkList에서 ClientId가 일치하는 엔트리 위치를 찾는다.
+        // Search the replicated list for a matching client id.
         for (int i = 0; i < Stats.Count; i++)
         {
             if (Stats[i].ClientId == clientId)
@@ -233,5 +278,59 @@ public class PlayerStatsState : NetworkBehaviour
         }
 
         return -1;
+    }
+
+    private static int ClampStackValue(int value)
+    {
+        // Clamp stat stacks to the current temporary design cap.
+        return Mathf.Clamp(value, 0, MaxStacksPerStat);
+    }
+
+    private static int GetStatValue(PlayerStatEntry entry, PlayerStatType statType)
+    {
+        // Read one stat field from the packed network entry.
+        return statType switch
+        {
+            PlayerStatType.MoveSpeed => entry.MoveSpeed,
+            PlayerStatType.JumpForce => entry.JumpForce,
+            PlayerStatType.Weight => entry.Weight,
+            PlayerStatType.Health => entry.Health,
+            PlayerStatType.Defense => entry.Defense,
+            PlayerStatType.AttackPower => entry.AttackPower,
+            PlayerStatType.FireRate => entry.FireRate,
+            _ => 0
+        };
+    }
+
+    private static PlayerStatEntry SetStatValue(PlayerStatEntry entry, PlayerStatType statType, int value)
+    {
+        // Write one stat field back into the packed network entry.
+        value = ClampStackValue(value);
+        switch (statType)
+        {
+            case PlayerStatType.MoveSpeed:
+                entry.MoveSpeed = value;
+                break;
+            case PlayerStatType.JumpForce:
+                entry.JumpForce = value;
+                break;
+            case PlayerStatType.Weight:
+                entry.Weight = value;
+                break;
+            case PlayerStatType.Health:
+                entry.Health = value;
+                break;
+            case PlayerStatType.Defense:
+                entry.Defense = value;
+                break;
+            case PlayerStatType.AttackPower:
+                entry.AttackPower = value;
+                break;
+            case PlayerStatType.FireRate:
+                entry.FireRate = value;
+                break;
+        }
+
+        return entry;
     }
 }
