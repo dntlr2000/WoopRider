@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -275,6 +276,42 @@ public class MatchStateController : NetworkBehaviour
         SetState(NetworkMatchState.Result, 0f);
     }
 
+    public void ShowNoticeToClient(ulong clientId, string message, float duration = 4f)
+    {
+        // Send a server-authored notice to one specific connected client.
+        if (!IsServer || NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        if (!NetworkManager.Singleton.ConnectedClients.ContainsKey(clientId))
+        {
+            Debug.Log($"[MatchStateController] Notice skipped for disconnected clientId={clientId} message={message}");
+            return;
+        }
+
+        ClientRpcParams rpcParams = new()
+        {
+            Send = new ClientRpcSendParams
+            {
+                TargetClientIds = new[] { clientId }
+            }
+        };
+
+        ShowNoticeClientRpc(ToFixedNoticeText(message), Mathf.Max(0f, duration), rpcParams);
+    }
+
+    public void ShowNoticeToAll(string message, float duration = 4f)
+    {
+        // Send a server-authored notice to every connected client.
+        if (!IsServer)
+        {
+            return;
+        }
+
+        ShowNoticeClientRpc(ToFixedNoticeText(message), Mathf.Max(0f, duration));
+    }
+
     private void AdvanceState()
     {
         // 경기 루프 상태 전이.
@@ -406,6 +443,13 @@ public class MatchStateController : NetworkBehaviour
         }
     }
 
+    [ClientRpc]
+    private void ShowNoticeClientRpc(FixedString512Bytes message, float duration, ClientRpcParams rpcParams = default)
+    {
+        // Receive a server notice and forward it to the local Canvas notice binder.
+        NoticePanelBinder.ShowNotice(message.ToString(), duration);
+    }
+
     [ServerRpc(RequireOwnership = false)]
     private void RequestStartMatchServerRpc(ServerRpcParams rpcParams = default)
     {
@@ -499,5 +543,11 @@ public class MatchStateController : NetworkBehaviour
         }
 
         return "Offline";
+    }
+
+    private static FixedString512Bytes ToFixedNoticeText(string message)
+    {
+        // Convert a notice string to an RPC-safe fixed string payload.
+        return new FixedString512Bytes(message ?? string.Empty);
     }
 }

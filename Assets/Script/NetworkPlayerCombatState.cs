@@ -400,6 +400,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     {
         // On health depletion, remove equipment and lock actions for a short recovery window.
         Debug.Log($"[NetworkPlayerCombatState] Equipment broken target={OwnerClientId} attacker={attackerClientId}");
+        SendEquipmentBreakNotices(attackerClientId);
         currentHealth.Value = 0f;
         isInvincible.Value = true;
         isActionDisabled.Value = true;
@@ -412,6 +413,30 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         }
 
         actionLockRoutine = StartCoroutine(ClearActionLockAfterDelay());
+    }
+
+    private void SendEquipmentBreakNotices(ulong attackerClientId)
+    {
+        // Notify the attacker and victim when one player breaks another player's equipment.
+        if (!IsServer || attackerClientId == OwnerClientId)
+        {
+            return;
+        }
+
+        MatchStateController controller = MatchStateController.Instance;
+        if (controller == null || !controller.IsSpawned)
+        {
+            return;
+        }
+
+        controller.ShowNoticeToClient(attackerClientId, $"플레이어 {FormatClientId(OwnerClientId)}를 파괴하였습니다!", 4f);
+        controller.ShowNoticeToClient(OwnerClientId, $"플레이어 {FormatClientId(attackerClientId)}에게 장비가 파괴당하였습니다..", 4f);
+    }
+
+    private static string FormatClientId(ulong clientId)
+    {
+        // Format a client id for temporary player-facing notices until player names exist.
+        return clientId.ToString();
     }
 
     private IEnumerator ClearActionLockAfterDelay()
