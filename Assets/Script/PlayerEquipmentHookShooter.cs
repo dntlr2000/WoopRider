@@ -12,21 +12,23 @@ public class PlayerEquipmentHookShooter : MonoBehaviour
 
     [Header("Muzzle")]
     [SerializeField] private Transform muzzleTransform;
-    [SerializeField] private float muzzleHeight = 1.15f;
-    [SerializeField] private float muzzleCameraRightOffset = 0.35f;
-    [SerializeField] private float muzzleCameraForwardOffset = 0.55f;
+    [SerializeField] private float muzzleHeight = 1.725f;
+    [SerializeField] private float muzzleCameraRightOffset = 0.525f;
+    [SerializeField] private float muzzleCameraForwardOffset = 0.825f;
 
     [Header("Input")]
     [SerializeField] private float hookCooldown = 0.35f;
     [SerializeField] private bool ignoreMouseWhenPointerOverUi = true;
 
     private ThirdPersonController controller;
+    private PlayableCharacterAnimationDriver animationDriver;
     private float nextHookTime;
 
     private void Awake()
     {
         // Cache local references used by the temporary hook input path.
         controller = GetComponent<ThirdPersonController>();
+        animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
         ResolveAimCamera();
     }
 
@@ -61,7 +63,21 @@ public class PlayerEquipmentHookShooter : MonoBehaviour
         if (pickupManager == null || !pickupManager.RequestEquipmentHook(muzzlePosition, aimPoint))
         {
             Debug.Log("[PlayerEquipmentHookShooter] Hook request ignored because no network pickup manager is ready.");
+            return;
         }
+
+        TriggerHookAnimation();
+    }
+
+    private void TriggerHookAnimation()
+    {
+        // Notify the local playable character animator that an equipment hook was fired.
+        if (animationDriver == null)
+        {
+            animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        }
+
+        animationDriver?.TriggerHook();
     }
 
     private Camera ResolveAimCamera()

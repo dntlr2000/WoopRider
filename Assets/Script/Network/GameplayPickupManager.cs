@@ -724,6 +724,7 @@ public class GameplayPickupManager : NetworkBehaviour
         Vector3 hookTargetPoint = ResolveHookTargetPoint(origin, targetPoint, playerObject.transform.forward);
         int hookVisualId = GetNextHookVisualId();
         SpawnEquipmentHookVisualClientRpc(hookVisualId, origin, hookTargetPoint, playerObject.transform.position, hookPullSpeed);
+        PlayEquipmentHookAnimationClientRpc(clientId);
         StartCoroutine(ResolveEquipmentHookTravel(clientId, origin, hookTargetPoint, hookVisualId));
         Debug.Log($"[GameplayPickupManager] Equipment hook fired clientId={clientId} requester={requesterLabel}");
         return true;
@@ -1754,6 +1755,13 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Play a temporary hook tether visual on every client until a real hook asset is available.
         SimpleHookVisual.Spawn(hookVisualId, origin, hookTargetPoint, playerPosition + Vector3.up * 0.6f, speed);
+    }
+
+    [ClientRpc]
+    private void PlayEquipmentHookAnimationClientRpc(ulong clientId)
+    {
+        // Play the hook action on the network avatar that owns this hook request.
+        NetworkPlayerAvatarRelay.TryPlayHookAnimationForClient(clientId);
     }
 
     [ClientRpc]

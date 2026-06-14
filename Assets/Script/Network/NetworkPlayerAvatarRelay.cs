@@ -27,8 +27,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     [SerializeField] private bool requireActiveMatchForAttack = true;
     [SerializeField] private float fallbackServerShotsPerSecond = 5f;
     [SerializeField] private float serverAimOriginTolerance = 4f;
-    [SerializeField] private float fallbackTargetRadius = 0.75f;
-    [SerializeField] private float fallbackTargetHeight = 1.1f;
+    [SerializeField] private float fallbackTargetRadius = 1.125f;
+    [SerializeField] private float fallbackTargetHeight = 1.65f;
 
     private ThirdPersonController localController;
     private NetworkPlayerEquipmentState equipmentState;
@@ -102,6 +102,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             }
 
             TryApplyProjectileDamage(packet, attackSettings);
+            ApplyAttackFacingFromProjectile(packet);
+            PlayShootAnimationClientRpc(transform.rotation);
             SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
             return true;
         }
@@ -194,7 +196,30 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         TryApplyProjectileDamage(packet, attackSettings);
+        ApplyAttackFacingFromProjectile(packet);
+        PlayShootAnimationClientRpc(transform.rotation);
         SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+    }
+
+    public void PlayHookAnimation()
+    {
+        // Play the hook action on this network avatar visual.
+        PlayAnimationDriverAction(AnimationActionKind.Hook);
+    }
+
+    public static void TryPlayHookAnimationForClient(ulong clientId)
+    {
+        // Find the network avatar owned by a client and play its hook action locally.
+        NetworkPlayerAvatarRelay[] relays = FindObjectsByType<NetworkPlayerAvatarRelay>(FindObjectsSortMode.None);
+        for (int i = 0; i < relays.Length; i++)
+        {
+            NetworkPlayerAvatarRelay relay = relays[i];
+            if (relay != null && relay.OwnerClientId == clientId)
+            {
+                relay.PlayHookAnimation();
+                return;
+            }
+        }
     }
 
     [ClientRpc]
@@ -202,6 +227,48 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     {
         // Spawn the same temporary projectile visual on every connected client.
         SimpleProjectileVisual.Spawn(origin, targetPoint, speed, radius, lifeTime);
+    }
+
+    [ClientRpc]
+    private void PlayShootAnimationClientRpc(Quaternion facingRotation)
+    {
+        // Align the network avatar to the approved shot direction before playing the shoot action.
+        transform.rotation = facingRotation;
+        PlayAnimationDriverAction(AnimationActionKind.Shoot);
+    }
+
+    private void ApplyAttackFacingFromProjectile(ProjectilePacket packet)
+    {
+        // Rotate the server avatar to the horizontal projectile direction for attack animation sync.
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        direction.y = 0f;
+        if (direction.sqrMagnitude <= 0.0001f)
+        {
+            return;
+        }
+
+        transform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
+    }
+
+    private void PlayAnimationDriverAction(AnimationActionKind actionKind)
+    {
+        // Resolve the animation driver and play a supported one-shot action.
+        PlayableCharacterAnimationDriver animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        if (animationDriver == null)
+        {
+            return;
+        }
+
+        if (actionKind == AnimationActionKind.Shoot)
+        {
+            animationDriver.TriggerShoot();
+            return;
+        }
+
+        if (actionKind == AnimationActionKind.Hook)
+        {
+            animationDriver.TriggerHook();
+        }
     }
 
     private void ApplyAvatarTransform(Vector3 position, Quaternion rotation)
@@ -213,6 +280,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     private void SetOwnerVisualVisible(bool visible)
     {
         // Toggle the temporary avatar renderer and collider visibility for this client.
+        RefreshVisualComponents();
+
         foreach (Renderer targetRenderer in renderers)
         {
             if (targetRenderer != null)
@@ -228,6 +297,13 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 targetCollider.enabled = visible;
             }
         }
+    }
+
+    private void RefreshVisualComponents()
+    {
+        // Re-scan runtime-created character visuals before changing owner visibility.
+        renderers = GetComponentsInChildren<Renderer>(true);
+        colliders = GetComponentsInChildren<Collider>(true);
     }
 
     private bool TryGetProjectileAttackSettings(bool requireResolvedEquipment, out EquipmentAttackSettings attackSettings)
@@ -672,5 +748,11 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         public float Speed;
         public float Radius;
         public float LifeTime;
+    }
+
+    private enum AnimationActionKind
+    {
+        Shoot,
+        Hook
     }
 }

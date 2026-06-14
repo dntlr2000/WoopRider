@@ -14,9 +14,9 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     [Header("Muzzle")]
     [SerializeField] private Transform muzzleTransform;
-    [SerializeField] private float muzzleHeight = 1.15f;
-    [SerializeField] private float muzzleCameraRightOffset = 0.45f;
-    [SerializeField] private float muzzleCameraForwardOffset = 0.6f;
+    [SerializeField] private float muzzleHeight = 1.725f;
+    [SerializeField] private float muzzleCameraRightOffset = 0.675f;
+    [SerializeField] private float muzzleCameraForwardOffset = 0.9f;
 
     [Header("Projectile")]
     [SerializeField] private float fallbackShotsPerSecond = 5f;
@@ -30,6 +30,7 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     private ThirdPersonController controller;
     private PlayerEquipment equipment;
+    private PlayableCharacterAnimationDriver animationDriver;
     private NetworkPlayerAvatarRelay cachedRelay;
     private float nextFireTime;
 
@@ -38,6 +39,7 @@ public class PlayerProjectileShooter : MonoBehaviour
         // Cache the local movement controller and the active camera reference.
         controller = GetComponent<ThirdPersonController>();
         equipment = GetComponent<PlayerEquipment>();
+        animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
         ResolveAimCamera();
     }
 
@@ -67,6 +69,8 @@ public class PlayerProjectileShooter : MonoBehaviour
             return;
         }
 
+        FaceCharacterToCamera(cameraToUse);
+
         float shotsPerSecond = GetShotsPerSecond(attackSettings);
         nextFireTime = Time.time + 1f / shotsPerSecond;
 
@@ -80,10 +84,34 @@ public class PlayerProjectileShooter : MonoBehaviour
         if (TrySendNetworkProjectile(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime, out bool usedNetworkPath) ||
             usedNetworkPath)
         {
+            TriggerShootAnimation();
             return;
         }
 
         SimpleProjectileVisual.Spawn(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime);
+        TriggerShootAnimation();
+    }
+
+    private void FaceCharacterToCamera(Camera cameraToUse)
+    {
+        // Turn the local character toward camera-forward before playing the shoot motion.
+        if (controller == null)
+        {
+            controller = GetComponent<ThirdPersonController>();
+        }
+
+        controller?.FaceCameraForwardImmediate(cameraToUse != null ? cameraToUse.transform : null);
+    }
+
+    private void TriggerShootAnimation()
+    {
+        // Notify the local playable character animator that a projectile attack was fired.
+        if (animationDriver == null)
+        {
+            animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        }
+
+        animationDriver?.TriggerShoot();
     }
 
     private Camera ResolveAimCamera()

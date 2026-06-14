@@ -17,6 +17,8 @@ GameObject:
   - component: {fileID: 6041382507361493921}
   - component: {fileID: 7183815542108392017}
   - component: {fileID: 6624792804768108123}
+  - component: {fileID: 1438166195506000384}
+  - component: {fileID: 3314891105417959424}
   m_Layer: 0
   m_Name: PlayerTest
   m_TagString: Untagged
@@ -131,13 +133,13 @@ CharacterController:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Height: 1
-  m_Radius: 0.5
+  m_Height: 1.5
+  m_Radius: 0.75
   m_SlopeLimit: 45
   m_StepOffset: 0.3
   m_SkinWidth: 0.08
   m_MinMoveDistance: 0.001
-  m_Center: {x: 0, y: 0, z: 0}
+  m_Center: {x: 0, y: 0.25, z: 0}
 --- !u!114 &8857753204982048550
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -148,8 +150,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6c095ec059465214990557fd493f5514, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
+  m_Name:
+  m_EditorClassIdentifier:
   cameraTransform: {fileID: 0}
   stats:
     moveSpeed: 6
@@ -173,8 +175,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e2046255eb3345b695ebcbf5be607a62, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
+  m_Name:
+  m_EditorClassIdentifier:
   defaultEquipment: {fileID: 11400000, guid: 2107929d80454811a91cbb9480a9c10a, type: 2}
   equipDefaultOnStart: 1
 --- !u!114 &7183815542108392017
@@ -187,17 +189,17 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 87ccc33ca9d64b1789448b965e2a8cad, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
+  m_Name: ''
+  m_EditorClassIdentifier: ''
   aimCamera: {fileID: 0}
   aimMask:
     serializedVersion: 2
     m_Bits: 4294967295
   maxAimDistance: 100
   muzzleTransform: {fileID: 0}
-  muzzleHeight: 1.15
-  muzzleCameraRightOffset: 0.45
-  muzzleCameraForwardOffset: 0.6
+  muzzleHeight: 1.725
+  muzzleCameraRightOffset: 0.675
+  muzzleCameraForwardOffset: 0.9
   fallbackShotsPerSecond: 5
   projectileSpeed: 32
   projectileRadius: 0.12
@@ -222,8 +224,71 @@ MonoBehaviour:
     m_Bits: 4294967295
   maxHookDistance: 45
   muzzleTransform: {fileID: 0}
-  muzzleHeight: 1.15
-  muzzleCameraRightOffset: 0.35
-  muzzleCameraForwardOffset: 0.55
+  muzzleHeight: 1.725
+  muzzleCameraRightOffset: 0.525
+  muzzleCameraForwardOffset: 0.825
   hookCooldown: 0.35
   ignoreMouseWhenPointerOverUi: 1
+--- !u!114 &1438166195506000384
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4695243963088308305}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f18f1a3cf37948aeb13f0bc4fa125913, type: 3}
+  m_Name: ''
+  m_EditorClassIdentifier: ''
+  visualPrefabResourcePath: fbx/Bangae_Playable
+  animatorControllerResourcePath: PlayableCharacters/Bangae_Playable
+  addAnimatorWhenMissing: 1
+  visualRootName: BangaePlayableVisual
+  localPosition: {x: 0, y: -0.5, z: 0}
+  localEulerAngles: {x: 0, y: 0, z: 0}
+  localScale: {x: 1.5, y: 1.5, z: 1.5}
+  hideRootRenderers: 1
+  destroyExistingVisual: 1
+  skipInBatchMode: 1
+--- !u!114 &3314891105417959424
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4695243963088308305}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1b163595661b4e978c3dd478453d88aa, type: 3}
+  m_Name: ''
+  m_EditorClassIdentifier: ''
+  animator: {fileID: 0}
+  moveSpeedParameter: MoveSpeed
+  isGroundedParameter: IsGrounded
+  jumpTrigger: Jump
+  damagedTrigger: Damaged
+  shootTrigger: Shoot
+  hookTrigger: Hook
+  landTrigger: Land
+  driveLocomotion: 1
+  moveSpeedDampTime: 0.08
+  stopSpeedSnapThreshold: 0.05
+  assumeGroundedWithoutController: 1
+  runSpeedThreshold: 0.1
+  driveControllerStatesDirectly: 0
+  idleStateName: GroundIdle
+  runStateName: Run
+  fallStateName: Fall
+  jumpStateName: Jump
+  landStateName: Land
+  damagedStateName: Damaged
+  shootStateName: GroundShoot
+  hookStateName: Hook
+  locomotionFadeDuration: 0.08
+  actionFadeDuration: 0.04
+  jumpActionDuration: 0.22
+  landActionDuration: 0.18
+  shootActionDuration: 0.28
+  hookActionDuration: 0.35
+  damagedActionDuration: 0.35

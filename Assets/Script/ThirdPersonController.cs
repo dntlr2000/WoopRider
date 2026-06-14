@@ -26,13 +26,16 @@ public class ThirdPersonController : MonoBehaviour
     [SerializeField] private float rotationSpeed = 12f;
     [SerializeField] private float gravity = -20f;
     [SerializeField] private bool rotateCharacterToMoveDirection = true;
+    [SerializeField] private float attackFacingLockDuration = 0.2f;
 
     [Header("Debug")]
     [SerializeField] private bool lockCursorOnStart = false;
 
     private CharacterController controller;
     private PlayerEquipment equipment;
+    private PlayableCharacterAnimationDriver animationDriver;
     private float verticalVelocity;
+    private float movementRotationLockedUntil;
 
     public float MoveSpeed => GetModifiedStat(PlayerStatType.MoveSpeed, stats.moveSpeed);
     public float JumpForce => GetModifiedStat(PlayerStatType.JumpForce, stats.jumpForce);
@@ -42,11 +45,33 @@ public class ThirdPersonController : MonoBehaviour
     public float AttackPower => GetModifiedStat(PlayerStatType.AttackPower, stats.attackPower);
     public float FireRate => GetModifiedStat(PlayerStatType.FireRate, stats.fireRate);
 
+    public bool FaceCameraForwardImmediate(Transform facingCamera = null)
+    {
+        // Snap the character to the active camera yaw for attack-facing actions.
+        Transform cameraToUse = facingCamera != null ? facingCamera : ResolveCameraTransform();
+        if (cameraToUse == null)
+        {
+            return false;
+        }
+
+        Vector3 forward = cameraToUse.forward;
+        forward.y = 0f;
+        if (forward.sqrMagnitude <= 0.0001f)
+        {
+            return false;
+        }
+
+        transform.rotation = Quaternion.LookRotation(forward.normalized, Vector3.up);
+        movementRotationLockedUntil = Mathf.Max(movementRotationLockedUntil, Time.time + Mathf.Max(0f, attackFacingLockDuration));
+        return true;
+    }
+
     private void Awake()
     {
         // Cache movement dependencies before the first input tick.
         controller = GetComponent<CharacterController>();
         equipment = GetComponent<PlayerEquipment>();
+        animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
         ResolveCameraTransform();
     }
 
@@ -102,7 +127,7 @@ public class ThirdPersonController : MonoBehaviour
         Vector3 move = (camForward * vertical + camRight * horizontal).normalized;
         Vector3 velocity = move * MoveSpeed;
 
-        if (move.sqrMagnitude > 0.001f && rotateCharacterToMoveDirection)
+        if (move.sqrMagnitude > 0.001f && rotateCharacterToMoveDirection && !IsMovementRotationLocked())
         {
             RotateCharacterToDirection(move);
         }
@@ -117,6 +142,7 @@ public class ThirdPersonController : MonoBehaviour
             if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
             {
                 verticalVelocity = JumpForce;
+                animationDriver?.TriggerJump();
             }
         }
 
@@ -208,6 +234,12 @@ public class ThirdPersonController : MonoBehaviour
         Quaternion targetRotation = Quaternion.LookRotation(direction, Vector3.up);
         float t = 1f - Mathf.Exp(-rotationSpeed * Time.deltaTime);
         transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, t);
+    }
+
+    private bool IsMovementRotationLocked()
+    {
+        // Keep attack-facing rotation from being immediately overwritten by movement input.
+        return Time.time < movementRotationLockedUntil;
     }
 
     private float GetModifiedStat(PlayerStatType statType, float baseValue)

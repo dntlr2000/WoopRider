@@ -21,7 +21,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     [Header("Low Health Effect")]
     [Range(0f, 1f)]
     [SerializeField] private float lowHealthSparkThreshold = 0.2f;
-    [SerializeField] private Vector3 lowHealthSparkLocalOffset = new(0f, 1f, 0f);
+    [SerializeField] private Vector3 lowHealthSparkLocalOffset = new(0f, 1.5f, 0f);
     [SerializeField] private float lowHealthSparkRate = 14f;
 
     private readonly NetworkVariable<float> currentHealth = new(
@@ -453,7 +453,33 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     private void OnHealthChanged(float previousHealth, float currentHealthValue)
     {
         // React immediately when replicated health crosses the low-health visual threshold.
+        if (currentHealthValue < previousHealth)
+        {
+            TriggerDamagedAnimation();
+        }
+
         UpdateLowHealthSparkEffect();
+    }
+
+    private void TriggerDamagedAnimation()
+    {
+        // Play damaged animation on this network avatar and on the local owner controller when applicable.
+        PlayableCharacterAnimationDriver networkDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        if (networkDriver != null)
+        {
+            networkDriver.TriggerDamaged();
+        }
+
+        if (!IsOwner)
+        {
+            return;
+        }
+
+        ThirdPersonController localController = FindFirstObjectByType<ThirdPersonController>();
+        if (localController != null && localController.TryGetComponent(out PlayableCharacterAnimationDriver localDriver))
+        {
+            localDriver.TriggerDamaged();
+        }
     }
 
     private void UpdateLowHealthSparkEffect()
