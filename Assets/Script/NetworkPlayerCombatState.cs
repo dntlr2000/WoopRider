@@ -8,6 +8,11 @@ using UnityEngine;
 public class NetworkPlayerCombatState : NetworkBehaviour
 {
     private static readonly Dictionary<ulong, NetworkPlayerCombatState> StatesByClientId = new();
+    private const string DefaultLowHealthSparkResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Sparks/Sparks red";
+    private const string DefaultDamageHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit";
+    private const string DefaultBreakExplosionEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Explosion";
+    private const string LowHealthSparkAnchorName = "EffectPoint_Spark";
+    private const string HitEffectAnchorName = "HitEffectPoint";
 
     [Header("Health")]
     [SerializeField] private float defaultMaxHealth = 100f;
@@ -21,8 +26,25 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     [Header("Low Health Effect")]
     [Range(0f, 1f)]
     [SerializeField] private float lowHealthSparkThreshold = 0.2f;
+    [SerializeField] private ParticleSystem lowHealthSparkPrefab;
+    [SerializeField] private Transform lowHealthSparkAnchor;
     [SerializeField] private Vector3 lowHealthSparkLocalOffset = new(0f, 1.5f, 0f);
+    [SerializeField] private Vector3 lowHealthSparkLocalEulerAngles = new(-20f, 180f, 0f);
+    [Min(0.01f)]
+    [SerializeField] private float lowHealthSparkScale = 2f;
     [SerializeField] private float lowHealthSparkRate = 14f;
+
+    [Header("Hit Effects")]
+    [SerializeField] private GameObject damageHitEffectPrefab;
+    [SerializeField] private GameObject equipmentBreakExplosionPrefab;
+    [SerializeField] private Vector3 damageHitEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float damageHitEffectScale = 1f;
+    [SerializeField] private float damageHitEffectLifetime = 2f;
+    [SerializeField] private Vector3 breakExplosionEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float breakExplosionScale = 1f;
+    [SerializeField] private float breakExplosionLifetime = 3f;
 
     private readonly NetworkVariable<float> currentHealth = new(
         0f,
@@ -42,6 +64,12 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     private NetworkPlayerEquipmentState equipmentState;
     private Coroutine actionLockRoutine;
     private ParticleSystem lowHealthSparkEffect;
+    private ParticleSystem resolvedDefaultLowHealthSparkPrefab;
+    private GameObject resolvedDefaultDamageHitEffectPrefab;
+    private GameObject resolvedDefaultBreakExplosionEffectPrefab;
+    private bool triedLoadDefaultLowHealthSparkPrefab;
+    private bool triedLoadDefaultDamageHitEffectPrefab;
+    private bool triedLoadDefaultBreakExplosionEffectPrefab;
     private bool hadEquipmentLastFrame;
 
     public float CurrentHealth => currentHealth.Value;
@@ -50,6 +78,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     public float EquipmentHealthPercent => ResolveEquipmentHealthPercent();
     public bool IsInvincible => isInvincible.Value;
     public bool IsActionDisabled => isActionDisabled.Value;
+    public bool CanBeHookStolen => CanLoseEquipmentToHook();
 
     public override void OnNetworkSpawn()
     {
@@ -108,6 +137,12 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     public bool ApplyDamage(float amount, ulong attackerClientId)
     {
+        // Apply server-authoritative damage with fallback hit effect placement.
+        return ApplyDamage(amount, attackerClientId, ResolveHitEffectPoint(), ResolveFallbackHitDirection());
+    }
+
+    public bool ApplyDamage(float amount, ulong attackerClientId, Vector3 hitPoint, Vector3 hitDirection)
+    {
         // Apply server-authoritative damage only when this player has equipment-backed health.
         if (!IsServer || amount <= 0f || !CanReceiveDamage())
         {
@@ -117,10 +152,11 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         float resolvedDamage = ResolveDamageAfterDefense(amount, out float defense);
         currentHealth.Value = Mathf.Max(0f, currentHealth.Value - resolvedDamage);
         Debug.Log($"[NetworkPlayerCombatState] Damage target={OwnerClientId} attacker={attackerClientId} raw={amount:0.0} defense={defense:0.0} amount={resolvedDamage:0.0} health={currentHealth.Value:0.0}");
+        PlayDamageHitEffectClientRpc(ResolveEffectPoint(hitPoint), ResolveEffectDirection(hitDirection));
 
         if (currentHealth.Value <= 0f)
         {
-            BreakEquipmentAndDisableActions(attackerClientId);
+            BreakEquipmentAndDisableActions(attackerClientId, hitPoint, hitDirection);
         }
 
         return true;
@@ -142,6 +178,34 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         float previousHealth = currentHealth.Value;
         currentHealth.Value = Mathf.Min(maxHealth, currentHealth.Value + maxHealth * Mathf.Clamp01(maxHealthPercent));
         Debug.Log($"[NetworkPlayerCombatState] Heal target={OwnerClientId} source={sourceLabel} amount={currentHealth.Value - previousHealth:0.0} health={currentHealth.Value:0.0}");
+        return true;
+    }
+
+    public bool TryStealEquipmentByHook(ulong stealerClientId, out EquipmentDefinition stolenEquipment, out float stolenHealthPercent)
+    {
+        // Remove this player's low-health equipment for a successful hook steal and lock actions briefly.
+        stolenEquipment = null;
+        stolenHealthPercent = 0f;
+        if (!IsServer || !CanLoseEquipmentToHook())
+        {
+            return false;
+        }
+
+        stolenEquipment = equipmentState.CurrentEquipment;
+        stolenHealthPercent = ResolveEquipmentHealthPercent();
+        currentHealth.Value = 0f;
+        isInvincible.Value = true;
+        isActionDisabled.Value = true;
+        equipmentState.Unequip();
+        hadEquipmentLastFrame = false;
+
+        if (actionLockRoutine != null)
+        {
+            StopCoroutine(actionLockRoutine);
+        }
+
+        actionLockRoutine = StartCoroutine(ClearActionLockAfterDelay());
+        Debug.Log($"[NetworkPlayerCombatState] Equipment stolen victim={OwnerClientId} stealer={stealerClientId} equipment={stolenEquipment.EquipmentId} healthPercent={stolenHealthPercent:0.00}");
         return true;
     }
 
@@ -224,11 +288,24 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             state.ApplyDamage(amount, attackerClientId);
     }
 
+    public static bool TryApplyDamage(ulong targetClientId, float amount, ulong attackerClientId, Vector3 hitPoint, Vector3 hitDirection)
+    {
+        // Static lookup helper used by attack systems that know the impact point and incoming direction.
+        return StatesByClientId.TryGetValue(targetClientId, out NetworkPlayerCombatState state) &&
+            state.ApplyDamage(amount, attackerClientId, hitPoint, hitDirection);
+    }
+
     public static bool TryHealPercent(ulong targetClientId, float maxHealthPercent)
     {
         // Static lookup helper used by server-side functional pickup resolution.
+        return TryHealPercent(targetClientId, maxHealthPercent, "pickup");
+    }
+
+    public static bool TryHealPercent(ulong targetClientId, float maxHealthPercent, string sourceLabel)
+    {
+        // Static lookup helper used by server-side healing effects with a custom log source.
         return StatesByClientId.TryGetValue(targetClientId, out NetworkPlayerCombatState state) &&
-            state.HealByMaxHealthPercent(maxHealthPercent, "pickup");
+            state.HealByMaxHealthPercent(maxHealthPercent, sourceLabel);
     }
 
     public static void ResetForMatchStartForAll()
@@ -308,6 +385,22 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             equipmentState.HasEquipment &&
             !isInvincible.Value &&
             currentHealth.Value > 0f;
+    }
+
+    private bool CanLoseEquipmentToHook()
+    {
+        // Hook stealing is allowed only while the same low-health condition that shows sparks is active.
+        if (equipmentState == null ||
+            !equipmentState.HasEquipment ||
+            isInvincible.Value ||
+            isActionDisabled.Value ||
+            currentHealth.Value <= 0f)
+        {
+            return false;
+        }
+
+        float maxHealth = ResolveMaxHealthForEquipment();
+        return maxHealth > 0f && currentHealth.Value / maxHealth <= Mathf.Clamp01(lowHealthSparkThreshold);
     }
 
     private void RefreshHealthForEquipmentState()
@@ -398,9 +491,16 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void BreakEquipmentAndDisableActions(ulong attackerClientId)
     {
-        // On health depletion, remove equipment and lock actions for a short recovery window.
+        // On health depletion without hit data, use the fallback effect point and direction.
+        BreakEquipmentAndDisableActions(attackerClientId, ResolveHitEffectPoint(), ResolveFallbackHitDirection());
+    }
+
+    private void BreakEquipmentAndDisableActions(ulong attackerClientId, Vector3 breakPoint, Vector3 hitDirection)
+    {
+        // On health depletion, play the break explosion, remove equipment, and lock actions briefly.
         Debug.Log($"[NetworkPlayerCombatState] Equipment broken target={OwnerClientId} attacker={attackerClientId}");
         SendEquipmentBreakNotices(attackerClientId);
+        PlayEquipmentBreakExplosionClientRpc(ResolveEffectPoint(breakPoint), ResolveEffectDirection(hitDirection));
         currentHealth.Value = 0f;
         isInvincible.Value = true;
         isActionDisabled.Value = true;
@@ -475,11 +575,149 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             return;
         }
 
-        ThirdPersonController localController = FindFirstObjectByType<ThirdPersonController>();
+        ThirdPersonController localController = GetComponent<ThirdPersonController>();
+        if (localController == null)
+        {
+            localController = FindFirstObjectByType<ThirdPersonController>();
+        }
+
         if (localController != null && localController.TryGetComponent(out PlayableCharacterAnimationDriver localDriver))
         {
-            localDriver.TriggerDamaged();
+            if (localDriver != networkDriver)
+            {
+                localDriver.TriggerDamaged();
+            }
         }
+    }
+
+    [ClientRpc]
+    private void PlayDamageHitEffectClientRpc(Vector3 hitPoint, Vector3 hitDirection)
+    {
+        // Spawn the green hit VFX on every client using the server-approved impact point and direction.
+        PlayOneShotEffect(
+            ResolveDamageHitEffectPrefab(),
+            ResolveEffectPoint(hitPoint),
+            ResolveEffectDirection(hitDirection),
+            damageHitEffectEulerOffset,
+            damageHitEffectScale,
+            damageHitEffectLifetime,
+            "DamageGreenHitEffect");
+    }
+
+    [ClientRpc]
+    private void PlayEquipmentBreakExplosionClientRpc(Vector3 breakPoint, Vector3 hitDirection)
+    {
+        // Spawn the equipment-break explosion VFX on every client before the visual state changes.
+        PlayOneShotEffect(
+            ResolveBreakExplosionEffectPrefab(),
+            ResolveEffectPoint(breakPoint),
+            ResolveEffectDirection(hitDirection),
+            breakExplosionEulerOffset,
+            breakExplosionScale,
+            breakExplosionLifetime,
+            "EquipmentBreakExplosionEffect");
+    }
+
+    private void PlayOneShotEffect(GameObject effectPrefab, Vector3 position, Vector3 direction, Vector3 eulerOffset, float scale, float lifetime, string effectName)
+    {
+        // Instantiate a temporary effect prefab, force it to play once, and clean it up after a short lifetime.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        Quaternion rotation = Quaternion.LookRotation(ResolveEffectDirection(direction), Vector3.up) * Quaternion.Euler(eulerOffset);
+        GameObject effectObject = Instantiate(effectPrefab, position, rotation);
+        effectObject.name = effectName;
+        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, scale);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, lifetime));
+    }
+
+    private GameObject ResolveDamageHitEffectPrefab()
+    {
+        // Use the assigned green-hit prefab first, then fall back to the shared Resources VFX asset.
+        if (damageHitEffectPrefab != null)
+        {
+            return damageHitEffectPrefab;
+        }
+
+        if (!triedLoadDefaultDamageHitEffectPrefab)
+        {
+            triedLoadDefaultDamageHitEffectPrefab = true;
+            resolvedDefaultDamageHitEffectPrefab = Resources.Load<GameObject>(DefaultDamageHitEffectResourcePath);
+        }
+
+        return resolvedDefaultDamageHitEffectPrefab;
+    }
+
+    private GameObject ResolveBreakExplosionEffectPrefab()
+    {
+        // Use the assigned explosion prefab first, then fall back to the shared Resources VFX asset.
+        if (equipmentBreakExplosionPrefab != null)
+        {
+            return equipmentBreakExplosionPrefab;
+        }
+
+        if (!triedLoadDefaultBreakExplosionEffectPrefab)
+        {
+            triedLoadDefaultBreakExplosionEffectPrefab = true;
+            resolvedDefaultBreakExplosionEffectPrefab = Resources.Load<GameObject>(DefaultBreakExplosionEffectResourcePath);
+        }
+
+        return resolvedDefaultBreakExplosionEffectPrefab;
+    }
+
+    private Vector3 ResolveEffectPoint(Vector3 requestedPoint)
+    {
+        // Use a provided world impact point when valid, otherwise fall back to the character hit anchor.
+        if (IsFinite(requestedPoint))
+        {
+            return requestedPoint;
+        }
+
+        return ResolveHitEffectPoint();
+    }
+
+    private Vector3 ResolveHitEffectPoint()
+    {
+        // Prefer the editable hit-effect anchor and otherwise place effects near the player's upper body.
+        Transform hitEffectAnchor = ResolveNamedChildTransform(HitEffectAnchorName);
+        return hitEffectAnchor != null ? hitEffectAnchor.position : transform.position + Vector3.up;
+    }
+
+    private Vector3 ResolveEffectDirection(Vector3 requestedDirection)
+    {
+        // Normalize incoming effect direction and fall back to this player's forward direction when needed.
+        if (IsFinite(requestedDirection) && requestedDirection.sqrMagnitude > 0.0001f)
+        {
+            return requestedDirection.normalized;
+        }
+
+        return ResolveFallbackHitDirection();
+    }
+
+    private Vector3 ResolveFallbackHitDirection()
+    {
+        // Provide a stable non-zero direction for effects that were triggered without projectile hit data.
+        Vector3 fallbackDirection = transform.forward;
+        return fallbackDirection.sqrMagnitude > 0.0001f ? fallbackDirection.normalized : Vector3.forward;
     }
 
     private void UpdateLowHealthSparkEffect()
@@ -522,18 +760,106 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void EnsureLowHealthSparkEffect()
     {
-        // Create a temporary red spark particle system until a dedicated damage-state VFX prefab exists.
+        // Create the configured low-health VFX under the character-specific spark anchor.
         if (lowHealthSparkEffect != null)
         {
             return;
         }
 
+        Transform sparkParent = ResolveLowHealthSparkParent();
+        ParticleSystem sparkPrefab = ResolveLowHealthSparkPrefab();
+        if (sparkPrefab != null)
+        {
+            lowHealthSparkEffect = Instantiate(sparkPrefab, sparkParent);
+            lowHealthSparkEffect.name = "LowHealthRedSparkEffect";
+            ApplyLowHealthSparkTransform(lowHealthSparkEffect.transform, sparkParent);
+            return;
+        }
+
         GameObject sparkObject = new("LowHealthRedSparkEffect");
-        sparkObject.transform.SetParent(transform, false);
-        sparkObject.transform.localPosition = lowHealthSparkLocalOffset;
+        sparkObject.transform.SetParent(sparkParent, false);
+        ApplyLowHealthSparkTransform(sparkObject.transform, sparkParent);
 
         lowHealthSparkEffect = sparkObject.AddComponent<ParticleSystem>();
         ConfigureLowHealthSparkEffect(lowHealthSparkEffect);
+    }
+
+    private void ApplyLowHealthSparkTransform(Transform sparkTransform, Transform sparkParent)
+    {
+        // Apply character-specific VFX placement, direction, and size without editing the source effect prefab.
+        if (sparkTransform == null)
+        {
+            return;
+        }
+
+        sparkTransform.localPosition = sparkParent == transform ? lowHealthSparkLocalOffset : Vector3.zero;
+        sparkTransform.localRotation = Quaternion.Euler(lowHealthSparkLocalEulerAngles);
+        sparkTransform.localScale = Vector3.one * Mathf.Max(0.01f, lowHealthSparkScale);
+    }
+
+    private Transform ResolveLowHealthSparkParent()
+    {
+        // Prefer an explicit prefab anchor so character-specific effects can be tuned in the editor.
+        if (lowHealthSparkAnchor != null)
+        {
+            return lowHealthSparkAnchor;
+        }
+
+        Transform discoveredAnchor = ResolveLowHealthSparkAnchorByName();
+        return discoveredAnchor != null ? discoveredAnchor : transform;
+    }
+
+    private Transform ResolveLowHealthSparkAnchorByName()
+    {
+        // Find the convention-based spark anchor on editable character prefabs when no reference is assigned.
+        return ResolveNamedChildTransform(LowHealthSparkAnchorName);
+    }
+
+    private Transform ResolveNamedChildTransform(string childName)
+    {
+        // Find a named child transform in active or inactive character prefab hierarchies.
+        Transform[] childTransforms = GetComponentsInChildren<Transform>(includeInactive: true);
+        for (int i = 0; i < childTransforms.Length; i++)
+        {
+            if (childTransforms[i] != null && childTransforms[i].name == childName)
+            {
+                return childTransforms[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        // Check world-space VFX inputs before using them for effect placement or rotation.
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        // Reject NaN and infinity values from network-provided effect data.
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
+    private ParticleSystem ResolveLowHealthSparkPrefab()
+    {
+        // Use the assigned VFX prefab first, then fall back to the shared Resources spark asset.
+        if (lowHealthSparkPrefab != null)
+        {
+            return lowHealthSparkPrefab;
+        }
+
+        if (!triedLoadDefaultLowHealthSparkPrefab)
+        {
+            triedLoadDefaultLowHealthSparkPrefab = true;
+            GameObject sparkPrefabObject = Resources.Load<GameObject>(DefaultLowHealthSparkResourcePath);
+            resolvedDefaultLowHealthSparkPrefab = sparkPrefabObject != null
+                ? sparkPrefabObject.GetComponentInChildren<ParticleSystem>(true)
+                : null;
+        }
+
+        return resolvedDefaultLowHealthSparkPrefab;
     }
 
     private void ConfigureLowHealthSparkEffect(ParticleSystem sparkEffect)
@@ -600,7 +926,12 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             return;
         }
 
-        PlayerEquipment playerEquipment = FindFirstObjectByType<PlayerEquipment>();
+        PlayerEquipment playerEquipment = GetComponent<PlayerEquipment>();
+        if (playerEquipment == null)
+        {
+            playerEquipment = FindFirstObjectByType<PlayerEquipment>();
+        }
+
         if (playerEquipment != null)
         {
             playerEquipment.BindCombatState(this);

@@ -1,4 +1,6 @@
+using System.Collections;
 using Unity.Netcode;
+using Unity.Netcode.Components;
 using UnityEngine;
 
 [RequireComponent(typeof(NetworkObject))]
@@ -18,7 +20,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     [SerializeField] private float rotationSendThreshold = 1f;
 
     [Header("Owner Visual")]
-    [SerializeField] private bool hideOwnerVisual = true;
+    [SerializeField] private bool hideOwnerVisual = false;
 
     [Header("Damage")]
     [SerializeField] private float fallbackAttackDamage = 20f;
@@ -32,6 +34,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private ThirdPersonController localController;
     private NetworkPlayerEquipmentState equipmentState;
+    private NetworkTransform networkTransform;
     private Renderer[] renderers;
     private Collider[] colliders;
     private float nextSendTime;
@@ -41,21 +44,23 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void Awake()
     {
-        // Cache temporary network avatar visuals so the owning client can hide them.
+        // Cache network player components used for owner relay and visual visibility.
+        localController = GetComponent<ThirdPersonController>();
         equipmentState = GetComponent<NetworkPlayerEquipmentState>();
+        networkTransform = GetComponent<NetworkTransform>();
         renderers = GetComponentsInChildren<Renderer>(true);
         colliders = GetComponentsInChildren<Collider>(true);
     }
 
     public override void OnNetworkSpawn()
     {
-        // Hide the temporary network avatar only for the owning client.
+        // Apply optional owner visual hiding for legacy split-player tests.
         SetOwnerVisualVisible(!(hideOwnerVisual && IsOwner));
 
         if (IsOwner)
         {
-            localController = FindFirstObjectByType<ThirdPersonController>();
-            if (localController != null)
+            localController = ResolveLocalController();
+            if (localController != null && UsesServerAuthoritativeTransformRelay())
             {
                 SendTransform(force: true);
             }
@@ -64,8 +69,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void Update()
     {
-        // Owner clients periodically relay their real test character transform to the server.
-        if (!IsOwner || !IsClient || Time.time < nextSendTime)
+        // Owner clients relay transforms only when the prefab still uses server-authoritative movement.
+        if (!IsOwner || !IsClient || !UsesServerAuthoritativeTransformRelay() || Time.time < nextSendTime)
         {
             return;
         }
@@ -101,7 +106,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 return false;
             }
 
-            TryApplyProjectileDamage(packet, attackSettings);
+            StartServerProjectileDamage(packet, attackSettings);
             ApplyAttackFacingFromProjectile(packet);
             PlayShootAnimationClientRpc(transform.rotation);
             SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
@@ -114,14 +119,11 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void SendTransform(bool force)
     {
-        // Read ThirdPersonController and send position changes through server-authoritative paths.
+        // Read the owned ThirdPersonController and send position changes through the legacy server-authoritative path.
+        localController = ResolveLocalController();
         if (localController == null)
         {
-            localController = FindFirstObjectByType<ThirdPersonController>();
-            if (localController == null)
-            {
-                return;
-            }
+            return;
         }
 
         Vector3 position = localController.transform.position;
@@ -142,6 +144,45 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         SubmitAvatarTransformServerRpc(position, rotation);
+    }
+
+    private bool UsesServerAuthoritativeTransformRelay()
+    {
+        // Use manual transform relay only for legacy server-authoritative NetworkTransform prefabs.
+        if (networkTransform == null)
+        {
+            networkTransform = GetComponent<NetworkTransform>();
+        }
+
+        return networkTransform == null || networkTransform.AuthorityMode == NetworkTransform.AuthorityModes.Server;
+    }
+
+    private ThirdPersonController ResolveLocalController()
+    {
+        // Prefer the controller on this Network PlayerPrefab, falling back to legacy split-scene tests.
+        if (localController != null && localController.HasLocalControl)
+        {
+            return localController;
+        }
+
+        ThirdPersonController ownController = GetComponent<ThirdPersonController>();
+        if (ownController != null && ownController.HasLocalControl)
+        {
+            localController = ownController;
+            return localController;
+        }
+
+        ThirdPersonController[] controllers = FindObjectsByType<ThirdPersonController>(FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            if (controllers[i] != null && controllers[i].HasLocalControl)
+            {
+                localController = controllers[i];
+                return localController;
+            }
+        }
+
+        return null;
     }
 
     private bool ShouldSend(Vector3 position, Quaternion rotation)
@@ -195,7 +236,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        TryApplyProjectileDamage(packet, attackSettings);
+        StartServerProjectileDamage(packet, attackSettings);
         ApplyAttackFacingFromProjectile(packet);
         PlayShootAnimationClientRpc(transform.rotation);
         SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
@@ -279,7 +320,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void SetOwnerVisualVisible(bool visible)
     {
-        // Toggle the temporary avatar renderer and collider visibility for this client.
+        // Toggle this player object's renderers and colliders when legacy owner hiding is enabled.
         RefreshVisualComponents();
 
         foreach (Renderer targetRenderer in renderers)
@@ -455,12 +496,61 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         return transform.position + Vector3.up * Mathf.Max(0f, fallbackTargetHeight);
     }
 
-    private void TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private void StartServerProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Resolve projectile damage over travel time so projectile weapons do not behave like hitscan attacks.
+        if (!IsServer)
+        {
+            return;
+        }
+
+        StartCoroutine(ResolveProjectileDamageOverTravel(packet, attackSettings));
+    }
+
+    private IEnumerator ResolveProjectileDamageOverTravel(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Advance the authoritative projectile in short segments and apply damage only when a segment intersects a target.
+        Vector3 toTarget = packet.TargetPoint - packet.Origin;
+        float maxDistance = toTarget.magnitude;
+        if (maxDistance <= 0.001f)
+        {
+            yield break;
+        }
+
+        Vector3 direction = toTarget / maxDistance;
+        float speed = Mathf.Max(MinProjectileSpeed, packet.Speed);
+        float remainingLifetime = Mathf.Max(0f, packet.LifeTime);
+        float traveledDistance = 0f;
+        Vector3 segmentOrigin = packet.Origin;
+
+        while (IsServer && IsSpawned && remainingLifetime > 0f && traveledDistance < maxDistance)
+        {
+            float deltaTime = Mathf.Max(Time.deltaTime, 0.001f);
+            float stepDistance = Mathf.Min(speed * deltaTime, maxDistance - traveledDistance);
+            Vector3 segmentTarget = segmentOrigin + direction * stepDistance;
+
+            ProjectilePacket segmentPacket = packet;
+            segmentPacket.Origin = segmentOrigin;
+            segmentPacket.TargetPoint = segmentTarget;
+
+            if (TryApplyProjectileDamage(segmentPacket, attackSettings))
+            {
+                yield break;
+            }
+
+            traveledDistance += stepDistance;
+            remainingLifetime -= deltaTime;
+            segmentOrigin = segmentTarget;
+            yield return null;
+        }
+    }
+
+    private bool TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
         // Server resolves the nearest damageable target, including players and destructible boxes.
         if (!IsServer)
         {
-            return;
+            return false;
         }
 
         float damageMultiplier = attackSettings != null ? Mathf.Max(0f, attackSettings.DamageMultiplier) : 1f;
@@ -468,7 +558,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         float damage = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.AttackPower, equipmentDamage);
         if (damage <= 0f)
         {
-            return;
+            return false;
         }
 
         bool hitPlayer = TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 playerHitPoint, out float playerHitDistance);
@@ -490,40 +580,46 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
         if (nearestPickupKind != 0 && (!hitPlayer || nearestPickupDistance <= playerHitDistance))
         {
-            ApplyProjectilePickupDamage(nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
-            return;
+            return ApplyProjectilePickupDamage(nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
         }
 
         if (!hitPlayer)
         {
-            return;
+            return false;
         }
 
-        if (targetCombatState.ApplyDamage(damage, OwnerClientId))
+        Vector3 hitDirection = (packet.TargetPoint - packet.Origin).normalized;
+        if (targetCombatState.ApplyDamage(damage, OwnerClientId, playerHitPoint, hitDirection))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
+            return true;
         }
+
+        return false;
     }
 
-    private void ApplyProjectilePickupDamage(int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
+    private bool ApplyProjectilePickupDamage(int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
     {
         // Apply damage to the nearest server-managed pickup target hit by the projectile path.
         GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
         if (pickupManager == null)
         {
-            return;
+            return false;
         }
 
         if (pickupKind == 1 && pickupManager.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
-            return;
+            return true;
         }
 
         if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(equipmentSlotId, damage, OwnerClientId))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
+            return true;
         }
+
+        return false;
     }
 
     private bool TryFindProjectileTarget(ProjectilePacket packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint, out float hitDistance)
@@ -553,7 +649,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         for (int i = 0; i < hits.Length; i++)
         {
             RaycastHit hit = hits[i];
-            if (hit.collider == null || hit.collider.GetComponentInParent<ThirdPersonController>() != null)
+            if (hit.collider == null)
             {
                 continue;
             }

@@ -6,6 +6,8 @@ using UnityEngine;
 
 public class GameplayPickupManager : NetworkBehaviour
 {
+    private const string DefaultEquipmentSparkResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Sparks/Sparks red";
+
     public static GameplayPickupManager Instance { get; private set; }
 
     public enum PickupKind : byte
@@ -27,6 +29,7 @@ public class GameplayPickupManager : NetworkBehaviour
         public bool Active;
         public bool Hooked;
         public bool RespawnOnCollect;
+        public bool RespawnEquipmentOnDespawn;
         public PickupKind Kind;
         public PlayerStatType StatType;
         public FunctionalPickupType FunctionalType;
@@ -61,6 +64,30 @@ public class GameplayPickupManager : NetworkBehaviour
         public Coroutine DespawnRoutine;
         public Coroutine BlinkRoutine;
         public bool Blinking;
+    }
+
+    private enum HookContactKind
+    {
+        None,
+        EquipmentDrop,
+        PlayerEquipment
+    }
+
+    private readonly struct HookContact
+    {
+        public readonly HookContactKind Kind;
+        public readonly int SlotId;
+        public readonly ulong TargetClientId;
+        public readonly Vector3 Point;
+
+        public HookContact(HookContactKind kind, int slotId, ulong targetClientId, Vector3 point)
+        {
+            // Store the resolved hook contact so travel code can dispatch to the correct interaction.
+            Kind = kind;
+            SlotId = slotId;
+            TargetClientId = targetClientId;
+            Point = point;
+        }
     }
 
     [Header("Main Match Pickups")]
@@ -115,6 +142,9 @@ public class GameplayPickupManager : NetworkBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float equipmentLowHealthSparkThreshold = 0.2f;
     [SerializeField] private Vector3 equipmentLowHealthSparkLocalOffset = new(0f, 0.35f, 0f);
+    [SerializeField] private Vector3 equipmentLowHealthSparkLocalEulerAngles = new(-20f, 180f, 0f);
+    [Min(0.01f)]
+    [SerializeField] private float equipmentLowHealthSparkScale = 2f;
     [SerializeField] private float equipmentLowHealthSparkRate = 16f;
 
     [Header("Pickup Physics")]
@@ -133,14 +163,18 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private Vector2 boxLootUpwardSpeedRange = new(4.2f, 5.8f);
 
     [Header("Equipment Hook")]
-    [SerializeField] private float hookRange = 45f;
+    [SerializeField] private float hookRange = 30f;
     [SerializeField] private float hookSelectRadius = 0.75f;
     [Min(1f)]
     [Tooltip("Controls both the temporary hook visual speed and the equipment pull speed.")]
-    [SerializeField] private float hookPullSpeed = 40f;
+    [SerializeField] private float hookPullSpeed = 70f;
     [SerializeField] private float hookEquipRadius = 1.1f;
     [SerializeField] private float hookServerCooldown = 0.5f;
     [SerializeField] private float hookOriginTolerance = 4f;
+    [SerializeField] private float hookPlayerStealRadius = 1.2f;
+    [SerializeField] private float hookPlayerStealTargetHeight = 1f;
+    [Range(0f, 1f)]
+    [SerializeField] private float hookStealHealPercent = 0.25f;
 
     private readonly Dictionary<int, PickupSlot> slots = new();
     private readonly Dictionary<int, BoxSlot> boxSlots = new();
@@ -151,6 +185,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private float nextLocalRequestTime;
     private int nextHookVisualId;
     private int nextLootPickupSlotId;
+    private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
+    private bool triedLoadDefaultEquipmentSparkPrefab;
 
     private void Awake()
     {
@@ -258,8 +294,8 @@ public class GameplayPickupManager : NetworkBehaviour
             case NetworkMatchState.FinalMatch:
                 ClearAllPickups();
                 ClearAllBoxItems();
-                List<ulong> restoredClientIds = NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
-                NetworkPlayerCombatState.ResetForClients(restoredClientIds);
+                NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
+                NetworkPlayerCombatState.ResetForMatchStartForAll();
                 SpawnFinalObjective();
                 break;
             case NetworkMatchState.Result:
@@ -300,6 +336,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Active = true;
         slot.Hooked = false;
         slot.RespawnOnCollect = respawnOnCollect;
+        slot.RespawnEquipmentOnDespawn = false;
         slot.Kind = PickupKind.Stat;
         slot.StatType = statType;
         slot.FunctionalType = FunctionalPickupType.None;
@@ -330,6 +367,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Active = true;
         slot.Hooked = false;
         slot.RespawnOnCollect = respawnOnCollect;
+        slot.RespawnEquipmentOnDespawn = false;
         slot.Kind = PickupKind.Functional;
         slot.StatType = PlayerStatType.Health;
         slot.FunctionalType = functionalType;
@@ -433,6 +471,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Active = true;
         slot.Hooked = false;
         slot.RespawnOnCollect = false;
+        slot.RespawnEquipmentOnDespawn = false;
         slot.Kind = PickupKind.FinalObjective;
         slot.StatType = PlayerStatType.MoveSpeed;
         slot.FunctionalType = FunctionalPickupType.None;
@@ -443,7 +482,7 @@ public class GameplayPickupManager : NetworkBehaviour
         StartPickupPhysics(slotId, Vector3.zero);
     }
 
-    private void ActivateEquipmentPickup(int slotId, EquipmentDefinition equipment, Vector3 position, float healthPercent = 1f)
+    private void ActivateEquipmentPickup(int slotId, EquipmentDefinition equipment, Vector3 position, float healthPercent = 1f, bool respawnOnDespawn = true)
     {
         // Activate a hook-only equipment pickup slot, keeping the equipment's stored health ratio.
         if (equipment == null)
@@ -455,6 +494,7 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.Active = true;
         slot.Hooked = false;
         slot.RespawnOnCollect = false;
+        slot.RespawnEquipmentOnDespawn = respawnOnDespawn;
         slot.Kind = PickupKind.Equipment;
         slot.StatType = PlayerStatType.AttackPower;
         slot.FunctionalType = FunctionalPickupType.None;
@@ -481,6 +521,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         slot.Active = false;
         slot.Hooked = false;
+        slot.RespawnEquipmentOnDespawn = false;
         StopPickupPhysics(slot);
         SetPickupVisualClientRpc(slotId, false, Vector3.zero, slot.StatType, slot.Kind, new FixedString64Bytes(slot.EquipmentId ?? string.Empty), slot.FunctionalType);
     }
@@ -500,6 +541,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
             slot.Active = false;
             slot.Hooked = false;
+            slot.RespawnEquipmentOnDespawn = false;
             if (slot.HookRoutine != null)
             {
                 StopCoroutine(slot.HookRoutine);
@@ -848,28 +890,28 @@ public class GameplayPickupManager : NetworkBehaviour
             Vector3 previousTip = currentTip;
             currentTip = Vector3.MoveTowards(currentTip, targetPoint, speed * Time.deltaTime);
 
-            if (TryFindHookContact(previousTip, currentTip, out int slotId))
+            if (TryFindHookContact(clientId, previousTip, currentTip, out HookContact contact))
             {
-                BeginPullEquipmentToClient(slotId, clientId, hookVisualId);
+                ResolveHookContact(contact, clientId, hookVisualId);
                 yield break;
             }
 
             yield return null;
         }
 
-        if (TryFindHookContact(currentTip, targetPoint, out int finalSlotId))
+        if (TryFindHookContact(clientId, currentTip, targetPoint, out HookContact finalContact))
         {
-            BeginPullEquipmentToClient(finalSlotId, clientId, hookVisualId);
+            ResolveHookContact(finalContact, clientId, hookVisualId);
             yield break;
         }
 
         Debug.Log($"[GameplayPickupManager] Equipment hook missed clientId={clientId}");
     }
 
-    private bool TryFindHookContact(Vector3 segmentStart, Vector3 segmentEnd, out int slotId)
+    private bool TryFindHookContact(ulong requesterClientId, Vector3 segmentStart, Vector3 segmentEnd, out HookContact contact)
     {
-        // Find an active equipment drop touched by the current hook-tip movement segment.
-        slotId = -1;
+        // Find the nearest hookable equipment drop or stealable low-health player along this hook segment.
+        contact = default;
         Vector3 segment = segmentEnd - segmentStart;
         float segmentLength = segment.magnitude;
         if (segmentLength <= 0.001f)
@@ -879,6 +921,14 @@ public class GameplayPickupManager : NetworkBehaviour
 
         Vector3 direction = segment / segmentLength;
         float nearestAlongSegment = float.MaxValue;
+        TryFindHookEquipmentDropContact(segmentStart, direction, segmentLength, ref nearestAlongSegment, ref contact);
+        TryFindHookPlayerStealContact(requesterClientId, segmentStart, direction, segmentLength, ref nearestAlongSegment, ref contact);
+        return contact.Kind != HookContactKind.None;
+    }
+
+    private void TryFindHookEquipmentDropContact(Vector3 segmentStart, Vector3 direction, float segmentLength, ref float nearestAlongSegment, ref HookContact contact)
+    {
+        // Check active field equipment drops against the current hook travel segment.
         foreach (KeyValuePair<int, PickupSlot> pair in slots)
         {
             PickupSlot slot = pair.Value;
@@ -896,11 +946,54 @@ public class GameplayPickupManager : NetworkBehaviour
             if (distanceToRay <= hookSelectRadius && alongSegment < nearestAlongSegment)
             {
                 nearestAlongSegment = alongSegment;
-                slotId = pair.Key;
+                contact = new HookContact(HookContactKind.EquipmentDrop, pair.Key, 0, segmentStart + direction * alongSegment);
             }
         }
+    }
 
-        return slotId >= 0;
+    private void TryFindHookPlayerStealContact(ulong requesterClientId, Vector3 segmentStart, Vector3 direction, float segmentLength, ref float nearestAlongSegment, ref HookContact contact)
+    {
+        // Check other players whose equipment is already sparking and therefore can be stolen by hook.
+        if (NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        float stealRadius = Mathf.Max(0.1f, hookPlayerStealRadius);
+        foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
+        {
+            if (clientId == requesterClientId ||
+                !NetworkManager.Singleton.ConnectedClients.TryGetValue(clientId, out NetworkClient client) ||
+                client.PlayerObject == null ||
+                !client.PlayerObject.TryGetComponent(out NetworkPlayerCombatState targetCombatState) ||
+                !targetCombatState.CanBeHookStolen)
+            {
+                continue;
+            }
+
+            Vector3 targetPoint = client.PlayerObject.transform.position + Vector3.up * Mathf.Max(0f, hookPlayerStealTargetHeight);
+            float distanceToRay = DistanceFromRaySegment(segmentStart, direction, targetPoint, segmentLength, out float alongSegment);
+            if (distanceToRay <= stealRadius && alongSegment < nearestAlongSegment)
+            {
+                nearestAlongSegment = alongSegment;
+                contact = new HookContact(HookContactKind.PlayerEquipment, -1, clientId, segmentStart + direction * alongSegment);
+            }
+        }
+    }
+
+    private void ResolveHookContact(HookContact contact, ulong clientId, int hookVisualId)
+    {
+        // Dispatch the resolved hook contact to either field-equipment pulling or player-equipment stealing.
+        if (contact.Kind == HookContactKind.EquipmentDrop)
+        {
+            BeginPullEquipmentToClient(contact.SlotId, clientId, hookVisualId);
+            return;
+        }
+
+        if (contact.Kind == HookContactKind.PlayerEquipment)
+        {
+            StealPlayerEquipmentWithHook(contact.TargetClientId, clientId, contact.Point, hookVisualId);
+        }
     }
 
     private void BeginPullEquipmentToClient(int slotId, ulong clientId, int hookVisualId)
@@ -968,6 +1061,7 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Swap the hooked equipment with the current one while preserving each equipment's health ratio.
         PickupSlot slot = GetOrCreateSlot(slotId);
+        bool shouldRespawnSlot = slot.RespawnEquipmentOnDespawn;
         EquipmentDefinition incomingEquipment = EquipmentCatalog.Get(slot.EquipmentId);
         float incomingHealthPercent = ResolveEquipmentHealthPercent(slot);
         NetworkPlayerEquipmentState.TryGetClientEquipment(clientId, out EquipmentDefinition previousEquipment);
@@ -1001,10 +1095,98 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         DeactivatePickup(slotId);
-        if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
+        if (shouldRespawnSlot && matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
         {
             slot.RespawnRoutine = StartCoroutine(RespawnEquipmentPickupAfterDelay(slotId));
         }
+    }
+
+    private void StealPlayerEquipmentWithHook(ulong victimClientId, ulong stealerClientId, Vector3 contactPoint, int hookVisualId)
+    {
+        // Transfer low-health equipment from a hooked player, drop the stealer's old equipment, and heal the stealer.
+        if (!NetworkPlayerEquipmentState.ClientHasEquipmentState(stealerClientId) ||
+            !TryGetPlayerObject(stealerClientId, out NetworkObject stealerObject) ||
+            !TryGetPlayerObject(victimClientId, out NetworkObject victimObject) ||
+            !victimObject.TryGetComponent(out NetworkPlayerCombatState victimCombatState))
+        {
+            return;
+        }
+
+        if (stealerObject != null)
+        {
+            LatchEquipmentHookVisualClientRpc(hookVisualId, contactPoint, stealerObject.transform.position, hookPullSpeed);
+        }
+
+        NetworkPlayerEquipmentState.TryGetClientEquipment(stealerClientId, out EquipmentDefinition previousEquipment);
+        float previousHealthPercent = previousEquipment != null ?
+            NetworkPlayerCombatState.GetEquipmentHealthPercent(stealerClientId) :
+            0f;
+
+        if (!victimCombatState.TryStealEquipmentByHook(stealerClientId, out EquipmentDefinition stolenEquipment, out float stolenHealthPercent))
+        {
+            return;
+        }
+
+        if (!NetworkPlayerEquipmentState.TryEquipClient(stealerClientId, stolenEquipment))
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Hook steal failed after victim unequip stealer={stealerClientId} victim={victimClientId}");
+            return;
+        }
+
+        NetworkPlayerCombatState.ResetClientForEquippedHealthPercent(stealerClientId, stolenHealthPercent);
+        NetworkPlayerCombatState.TryHealPercent(stealerClientId, Mathf.Clamp01(hookStealHealPercent), "hook-steal");
+        DropPreviousEquipmentFromHookSteal(stealerObject, stealerClientId, previousEquipment, previousHealthPercent);
+        SendHookStealNotices(victimClientId, stealerClientId, stolenEquipment);
+        Debug.Log($"[GameplayPickupManager] Player equipment stolen stealer={stealerClientId} victim={victimClientId} equipment={stolenEquipment.EquipmentId} stolenHealthPercent={stolenHealthPercent:0.00}");
+    }
+
+    private void SendHookStealNotices(ulong victimClientId, ulong stealerClientId, EquipmentDefinition stolenEquipment)
+    {
+        // Notify both clients after a hook steal successfully transfers equipment ownership.
+        if (!IsServer || stolenEquipment == null)
+        {
+            return;
+        }
+
+        MatchStateController controller = MatchStateController.Instance;
+        if (controller == null || !controller.IsSpawned)
+        {
+            return;
+        }
+
+        string equipmentName = FormatEquipmentName(stolenEquipment);
+        controller.ShowNoticeToClient(victimClientId, $"{equipmentName}을 강탈당하였습니다!", 4f);
+        controller.ShowNoticeToClient(stealerClientId, $"{FormatClientId(victimClientId)}로부터 {equipmentName}을 강탈하였습니다!", 4f);
+    }
+
+    private static string FormatEquipmentName(EquipmentDefinition equipment)
+    {
+        // Prefer player-facing equipment display names, falling back to the stable id when needed.
+        if (equipment == null)
+        {
+            return "장비";
+        }
+
+        return string.IsNullOrWhiteSpace(equipment.DisplayName) ? equipment.EquipmentId : equipment.DisplayName;
+    }
+
+    private static string FormatClientId(ulong clientId)
+    {
+        // Format a temporary player label until user-facing player names are introduced.
+        return $"플레이어 {clientId}";
+    }
+
+    private void DropPreviousEquipmentFromHookSteal(NetworkObject stealerObject, ulong stealerClientId, EquipmentDefinition previousEquipment, float previousHealthPercent)
+    {
+        // Drop the stealer's old equipment as a temporary field item that does not expand the normal spawn pool.
+        if (previousEquipment == null || stealerObject == null)
+        {
+            return;
+        }
+
+        int slotId = GetNextLootPickupSlotId();
+        ActivateEquipmentPickup(slotId, previousEquipment, ResolveEquipmentDropPosition(stealerObject), previousHealthPercent, respawnOnDespawn: false);
+        Debug.Log($"[GameplayPickupManager] Previous equipment dropped after steal clientId={stealerClientId} slot={slotId} equipment={previousEquipment.EquipmentId} healthPercent={previousHealthPercent:0.00}");
     }
 
     private Vector3 ResolveEquipmentDropPosition(NetworkObject playerObject)
@@ -1322,7 +1504,7 @@ public class GameplayPickupManager : NetworkBehaviour
         PickupKind despawnedKind = slot.Kind;
         bool shouldRespawnContact = slot.RespawnOnCollect &&
             (despawnedKind == PickupKind.Stat || despawnedKind == PickupKind.Functional);
-        bool shouldRespawnEquipment = despawnedKind == PickupKind.Equipment;
+        bool shouldRespawnEquipment = despawnedKind == PickupKind.Equipment && slot.RespawnEquipmentOnDespawn;
 
         SetPickupBlinkClientRpc(slotId, false);
         DeactivatePickup(slotId, stopDespawnTimer: false);
@@ -1482,9 +1664,10 @@ public class GameplayPickupManager : NetworkBehaviour
         // Remove a destroyed field equipment drop and let the normal equipment respawn flow replace it.
         PickupSlot slot = GetOrCreateSlot(slotId);
         string equipmentId = slot.EquipmentId;
+        bool shouldRespawn = slot.RespawnEquipmentOnDespawn;
         DeactivatePickup(slotId);
 
-        if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
+        if (shouldRespawn && matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
         {
             slot.RespawnRoutine = StartCoroutine(RespawnEquipmentPickupAfterDelay(slotId));
         }
@@ -1680,20 +1863,13 @@ public class GameplayPickupManager : NetworkBehaviour
     private static bool LocalPlayerCanCollectItems()
     {
         // Let local clients skip pickup requests when their current equipment cannot collect.
-        PlayerEquipment equipment = FindFirstObjectByType<PlayerEquipment>();
+        PlayerEquipment equipment = ResolveLocalPlayerEquipment();
         return equipment != null && equipment.CanCollectItems;
     }
 
     private static bool TryGetLocalCollectionPosition(out Vector3 position)
     {
-        // 현재 테스트 씬에서는 실제 조작 캐릭터인 ThirdPersonController 위치를 우선 사용한다.
-        ThirdPersonController controller = FindFirstObjectByType<ThirdPersonController>();
-        if (controller != null)
-        {
-            position = controller.transform.position;
-            return true;
-        }
-
+        // Prefer the owned Network PlayerObject, falling back to offline test controllers.
         if (NetworkManager.Singleton != null &&
             NetworkManager.Singleton.SpawnManager != null &&
             NetworkManager.Singleton.SpawnManager.GetLocalPlayerObject() != null)
@@ -1702,8 +1878,45 @@ public class GameplayPickupManager : NetworkBehaviour
             return true;
         }
 
+        ThirdPersonController controller = FindLocalController();
+        if (controller != null)
+        {
+            position = controller.transform.position;
+            return true;
+        }
+
         position = default;
         return false;
+    }
+
+    private static PlayerEquipment ResolveLocalPlayerEquipment()
+    {
+        // Resolve equipment from the owned Network PlayerObject before using offline fallbacks.
+        if (NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.SpawnManager != null &&
+            NetworkManager.Singleton.SpawnManager.GetLocalPlayerObject() != null &&
+            NetworkManager.Singleton.SpawnManager.GetLocalPlayerObject().TryGetComponent(out PlayerEquipment equipment))
+        {
+            return equipment;
+        }
+
+        ThirdPersonController controller = FindLocalController();
+        return controller != null ? controller.GetComponent<PlayerEquipment>() : null;
+    }
+
+    private static ThirdPersonController FindLocalController()
+    {
+        // Find the locally controlled player controller for offline and transitional scenes.
+        ThirdPersonController[] controllers = FindObjectsByType<ThirdPersonController>(FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            if (controllers[i] != null && controllers[i].HasLocalControl)
+            {
+                return controllers[i];
+            }
+        }
+
+        return null;
     }
 
     private IEnumerator RespawnContactPickupAfterDelay(int slotId)
@@ -2082,20 +2295,54 @@ public class GameplayPickupManager : NetworkBehaviour
             return;
         }
 
-        if (equipmentLowHealthSparkPrefab != null)
+        ParticleSystem sparkPrefab = ResolveEquipmentLowHealthSparkPrefab();
+        if (sparkPrefab != null)
         {
-            slot.EquipmentLowHealthSparkEffect = Instantiate(equipmentLowHealthSparkPrefab, slot.Visual.transform);
-            slot.EquipmentLowHealthSparkEffect.transform.localPosition = equipmentLowHealthSparkLocalOffset;
-            slot.EquipmentLowHealthSparkEffect.transform.localRotation = Quaternion.identity;
+            slot.EquipmentLowHealthSparkEffect = Instantiate(sparkPrefab, slot.Visual.transform);
+            slot.EquipmentLowHealthSparkEffect.name = "EquipmentLowHealthRedSparkEffect";
+            ApplyEquipmentLowHealthSparkTransform(slot.EquipmentLowHealthSparkEffect.transform);
             return;
         }
 
         GameObject sparkObject = new("EquipmentLowHealthRedSparkEffect");
         sparkObject.transform.SetParent(slot.Visual.transform, false);
-        sparkObject.transform.localPosition = equipmentLowHealthSparkLocalOffset;
+        ApplyEquipmentLowHealthSparkTransform(sparkObject.transform);
 
         slot.EquipmentLowHealthSparkEffect = sparkObject.AddComponent<ParticleSystem>();
         ConfigureEquipmentLowHealthSparkEffect(slot.EquipmentLowHealthSparkEffect);
+    }
+
+    private void ApplyEquipmentLowHealthSparkTransform(Transform sparkTransform)
+    {
+        // Apply drop-equipment VFX placement, direction, and size without editing the shared effect prefab.
+        if (sparkTransform == null)
+        {
+            return;
+        }
+
+        sparkTransform.localPosition = equipmentLowHealthSparkLocalOffset;
+        sparkTransform.localRotation = Quaternion.Euler(equipmentLowHealthSparkLocalEulerAngles);
+        sparkTransform.localScale = Vector3.one * Mathf.Max(0.01f, equipmentLowHealthSparkScale);
+    }
+
+    private ParticleSystem ResolveEquipmentLowHealthSparkPrefab()
+    {
+        // Use the inspector-assigned drop-equipment VFX first, then fall back to the shared Resources spark asset.
+        if (equipmentLowHealthSparkPrefab != null)
+        {
+            return equipmentLowHealthSparkPrefab;
+        }
+
+        if (!triedLoadDefaultEquipmentSparkPrefab)
+        {
+            triedLoadDefaultEquipmentSparkPrefab = true;
+            GameObject sparkPrefabObject = Resources.Load<GameObject>(DefaultEquipmentSparkResourcePath);
+            resolvedDefaultEquipmentSparkPrefab = sparkPrefabObject != null
+                ? sparkPrefabObject.GetComponentInChildren<ParticleSystem>(true)
+                : null;
+        }
+
+        return resolvedDefaultEquipmentSparkPrefab;
     }
 
     private void ConfigureEquipmentLowHealthSparkEffect(ParticleSystem sparkEffect)

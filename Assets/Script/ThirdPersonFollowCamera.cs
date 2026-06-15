@@ -77,20 +77,50 @@ public class ThirdPersonFollowCamera : MonoBehaviour
 
     private Transform ResolveTarget()
     {
-        // Auto-bind to the current test player when no explicit target is assigned.
-        if (target != null || !autoFindTarget)
+        // Auto-bind to the locally controlled player when no explicit target is assigned.
+        if (!autoFindTarget)
         {
             return target;
         }
 
-        ThirdPersonController controller = FindFirstObjectByType<ThirdPersonController>();
+        if (target != null && IsLocalTarget(target))
+        {
+            return target;
+        }
+
+        target = null;
+        initializedAngles = false;
+        ThirdPersonController controller = FindLocalController();
         if (controller != null)
         {
             target = controller.transform;
+            snappedToTarget = false;
             InitializeAnglesFromTarget();
         }
 
         return target;
+    }
+
+    private static ThirdPersonController FindLocalController()
+    {
+        // Prefer the owner-controlled network player, falling back to offline test controllers.
+        ThirdPersonController[] controllers = FindObjectsByType<ThirdPersonController>(FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            if (controllers[i] != null && controllers[i].HasLocalControl)
+            {
+                return controllers[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsLocalTarget(Transform candidate)
+    {
+        // Keep the current target only while it still belongs to the locally controlled player.
+        ThirdPersonController controller = candidate != null ? candidate.GetComponent<ThirdPersonController>() : null;
+        return controller != null && controller.HasLocalControl;
     }
 
     private void InitializeAnglesFromTarget()

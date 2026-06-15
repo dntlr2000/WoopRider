@@ -20,7 +20,7 @@ MonoBehaviour:
   attack:
     attackMode: 0
     shotsPerSecondOverride: 0
-    damageMultiplier: 1
+    damageMultiplier: 0.8
     range: 100
     projectileSpeed: 32
     projectileRadius: 0.12

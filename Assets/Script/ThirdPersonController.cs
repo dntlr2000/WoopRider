@@ -1,3 +1,4 @@
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -34,8 +35,11 @@ public class ThirdPersonController : MonoBehaviour
     private CharacterController controller;
     private PlayerEquipment equipment;
     private PlayableCharacterAnimationDriver animationDriver;
+    private NetworkObject networkObject;
     private float verticalVelocity;
     private float movementRotationLockedUntil;
+    private float cameraFacingLockedUntil;
+    private Transform cameraFacingLockTransform;
 
     public float MoveSpeed => GetModifiedStat(PlayerStatType.MoveSpeed, stats.moveSpeed);
     public float JumpForce => GetModifiedStat(PlayerStatType.JumpForce, stats.jumpForce);
@@ -44,6 +48,8 @@ public class ThirdPersonController : MonoBehaviour
     public float Defense => GetModifiedStat(PlayerStatType.Defense, stats.defense);
     public float AttackPower => GetModifiedStat(PlayerStatType.AttackPower, stats.attackPower);
     public float FireRate => GetModifiedStat(PlayerStatType.FireRate, stats.fireRate);
+    public bool HasLocalControl => ResolveHasLocalControl();
+    public bool IsCameraFacingLocked => Time.time < cameraFacingLockedUntil;
 
     public bool FaceCameraForwardImmediate(Transform facingCamera = null)
     {
@@ -66,18 +72,37 @@ public class ThirdPersonController : MonoBehaviour
         return true;
     }
 
+    public void LockCameraFacing(float duration, Transform facingCamera = null)
+    {
+        // Keep the character facing the camera direction for longer actions such as hook travel.
+        if (duration <= 0f)
+        {
+            return;
+        }
+
+        cameraFacingLockTransform = facingCamera != null ? facingCamera : ResolveCameraTransform();
+        cameraFacingLockedUntil = Mathf.Max(cameraFacingLockedUntil, Time.time + duration);
+        ApplyCameraFacingLock();
+    }
+
     private void Awake()
     {
         // Cache movement dependencies before the first input tick.
         controller = GetComponent<CharacterController>();
         equipment = GetComponent<PlayerEquipment>();
         animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        networkObject = GetComponent<NetworkObject>();
         ResolveCameraTransform();
     }
 
     private void Start()
     {
         // Apply the optional test cursor lock setting.
+        if (!HasLocalControl)
+        {
+            return;
+        }
+
         if (lockCursorOnStart)
         {
             Cursor.lockState = CursorLockMode.Locked;
@@ -93,12 +118,18 @@ public class ThirdPersonController : MonoBehaviour
     private void Update()
     {
         // Poll input each frame and update local character movement.
+        if (!HasLocalControl)
+        {
+            return;
+        }
+
         if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
 
+        ApplyCameraFacingLock();
         HandleMovement();
     }
 
@@ -240,6 +271,39 @@ public class ThirdPersonController : MonoBehaviour
     {
         // Keep attack-facing rotation from being immediately overwritten by movement input.
         return Time.time < movementRotationLockedUntil;
+    }
+
+    private void ApplyCameraFacingLock()
+    {
+        // Refresh camera-facing rotation while a longer camera-facing action is active.
+        if (!IsCameraFacingLocked)
+        {
+            return;
+        }
+
+        Transform cameraToUse = cameraFacingLockTransform != null ? cameraFacingLockTransform : ResolveCameraTransform();
+        FaceCameraForwardImmediate(cameraToUse);
+    }
+
+    private bool ResolveHasLocalControl()
+    {
+        // Allow offline tests, but restrict network-spawned player input to the owning client.
+        if (networkObject == null)
+        {
+            networkObject = GetComponent<NetworkObject>();
+        }
+
+        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
+        {
+            return true;
+        }
+
+        if (networkObject == null || !networkObject.IsSpawned)
+        {
+            return false;
+        }
+
+        return networkObject.IsOwner;
     }
 
     private float GetModifiedStat(PlayerStatType statType, float baseValue)

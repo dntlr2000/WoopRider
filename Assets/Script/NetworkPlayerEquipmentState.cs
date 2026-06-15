@@ -87,6 +87,14 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
             state.CanAttack;
     }
 
+    public static bool ClientHasEquipmentState(ulong clientId)
+    {
+        // Confirm that the server can assign equipment to this client, even when currently unequipped.
+        return StatesByClientId.TryGetValue(clientId, out NetworkPlayerEquipmentState state) &&
+            state != null &&
+            state.IsServer;
+    }
+
     public static bool TryEquipClient(ulong clientId, EquipmentDefinition equipment)
     {
         // Equip a specific client from server-side pickup or hook resolution.
@@ -153,13 +161,18 @@ public class NetworkPlayerEquipmentState : NetworkBehaviour
 
     private void TryBindLocalPlayerEquipment()
     {
-        // Owners mirror their network equipment state onto the local test character.
+        // Owners mirror their network equipment state onto the local player component.
         if (!IsOwner)
         {
             return;
         }
 
-        PlayerEquipment playerEquipment = FindFirstObjectByType<PlayerEquipment>();
+        PlayerEquipment playerEquipment = GetComponent<PlayerEquipment>();
+        if (playerEquipment == null)
+        {
+            playerEquipment = FindFirstObjectByType<PlayerEquipment>();
+        }
+
         if (playerEquipment != null)
         {
             playerEquipment.BindNetworkState(this);

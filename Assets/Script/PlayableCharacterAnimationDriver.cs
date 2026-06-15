@@ -1,3 +1,4 @@
+using Unity.Netcode;
 using UnityEngine;
 
 public class PlayableCharacterAnimationDriver : MonoBehaviour
@@ -41,6 +42,7 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
 
     private PlayableCharacterVisualLoader visualLoader;
     private CharacterController characterController;
+    private NetworkObject networkObject;
     private Vector3 lastPosition;
     private bool wasGrounded;
     private bool initialized;
@@ -60,6 +62,7 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
         // Cache local dependencies and Animator parameter hashes.
         visualLoader = GetComponent<PlayableCharacterVisualLoader>();
         characterController = GetComponent<CharacterController>();
+        networkObject = GetComponent<NetworkObject>();
         CacheParameterHashes();
         lastPosition = transform.position;
         wasGrounded = ResolveGrounded();
@@ -108,19 +111,19 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
     public void TriggerDamaged()
     {
         // Play the damaged one-shot animation.
-        PlayTriggerOrActionState(damagedHash, damagedStateName, damagedActionDuration);
+        PlayTriggerOrActionState(damagedHash, damagedStateName, damagedActionDuration, restartIfAlreadyPlaying: true);
     }
 
     public void TriggerShoot()
     {
         // Play the shooting one-shot animation.
-        PlayTriggerOrActionState(shootHash, shootStateName, shootActionDuration);
+        PlayTriggerOrActionState(shootHash, shootStateName, shootActionDuration, restartIfAlreadyPlaying: true);
     }
 
     public void TriggerHook()
     {
         // Play the equipment hook one-shot animation.
-        PlayTriggerOrActionState(hookHash, hookStateName, hookActionDuration);
+        PlayTriggerOrActionState(hookHash, hookStateName, hookActionDuration, restartIfAlreadyPlaying: true);
     }
 
     private Animator ResolveAnimator()
@@ -206,7 +209,7 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
         PlayTriggerOrActionState(landHash, landStateName, landActionDuration);
     }
 
-    private void PlayTriggerOrActionState(int triggerHash, string stateName, float duration)
+    private void PlayTriggerOrActionState(int triggerHash, string stateName, float duration, bool restartIfAlreadyPlaying = false)
     {
         // Route one-shot animations through exactly one control path to avoid double-starting the same clip.
         if (driveControllerStatesDirectly && PlayActionState(stateName, duration))
@@ -214,7 +217,35 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
             return;
         }
 
+        if (restartIfAlreadyPlaying && RestartActionStateIfAlreadyPlaying(triggerHash, stateName))
+        {
+            return;
+        }
+
         SetTrigger(triggerHash);
+    }
+
+    private bool RestartActionStateIfAlreadyPlaying(int triggerHash, string stateName)
+    {
+        // Restart the same one-shot action from frame zero when it is already current or being entered.
+        if (!TryResolveStateHash(stateName, out int fullPathHash))
+        {
+            return false;
+        }
+
+        bool isCurrentState = animator.GetCurrentAnimatorStateInfo(0).fullPathHash == fullPathHash;
+        bool isNextState = animator.IsInTransition(0) &&
+            animator.GetNextAnimatorStateInfo(0).fullPathHash == fullPathHash;
+
+        if (!isCurrentState && !isNextState)
+        {
+            return false;
+        }
+
+        animator.ResetTrigger(triggerHash);
+        animator.Play(fullPathHash, 0, 0f);
+        lastRequestedStateName = stateName;
+        return true;
     }
 
     private bool PlayActionState(string stateName, float duration)
@@ -243,7 +274,7 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
     private bool CrossFadeState(string stateName, float fadeDuration, bool force = false)
     {
         // Crossfade to a named AnimatorController state when it exists on the base layer.
-        if (string.IsNullOrWhiteSpace(stateName) || ResolveAnimator() == null)
+        if (!TryResolveStateHash(stateName, out int fullPathHash))
         {
             return false;
         }
@@ -253,15 +284,22 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
             return false;
         }
 
-        int fullPathHash = Animator.StringToHash($"Base Layer.{stateName}");
-        if (!animator.HasState(0, fullPathHash))
+        animator.CrossFade(fullPathHash, Mathf.Max(0f, fadeDuration), 0);
+        lastRequestedStateName = stateName;
+        return true;
+    }
+
+    private bool TryResolveStateHash(string stateName, out int fullPathHash)
+    {
+        // Resolve a base-layer state hash only when the Animator exists and the state is present.
+        fullPathHash = 0;
+        if (string.IsNullOrWhiteSpace(stateName) || ResolveAnimator() == null)
         {
             return false;
         }
 
-        animator.CrossFade(fullPathHash, Mathf.Max(0f, fadeDuration), 0);
-        lastRequestedStateName = stateName;
-        return true;
+        fullPathHash = Animator.StringToHash($"Base Layer.{stateName}");
+        return animator.HasState(0, fullPathHash);
     }
 
     private float ResolveHorizontalSpeed()
@@ -281,6 +319,20 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
     private bool ResolveGrounded()
     {
         // Prefer CharacterController grounded state, then fall back to the configured remote-avatar assumption.
+        if (networkObject == null)
+        {
+            networkObject = GetComponent<NetworkObject>();
+        }
+
+        if (networkObject != null &&
+            NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.IsListening &&
+            networkObject.IsSpawned &&
+            !networkObject.IsOwner)
+        {
+            return assumeGroundedWithoutController;
+        }
+
         if (characterController != null)
         {
             return characterController.isGrounded;

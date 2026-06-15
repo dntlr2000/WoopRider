@@ -197,9 +197,9 @@ MonoBehaviour:
     m_Bits: 4294967295
   maxAimDistance: 100
   muzzleTransform: {fileID: 0}
-  muzzleHeight: 1.725
-  muzzleCameraRightOffset: 0.675
-  muzzleCameraForwardOffset: 0.9
+  muzzleHeight: 0.75
+  muzzleRightOffset: 0.25
+  muzzleForwardOffset: 0.35
   fallbackShotsPerSecond: 5
   projectileSpeed: 32
   projectileRadius: 0.12
@@ -222,13 +222,15 @@ MonoBehaviour:
   aimMask:
     serializedVersion: 2
     m_Bits: 4294967295
-  maxHookDistance: 45
+  maxHookDistance: 30
   muzzleTransform: {fileID: 0}
-  muzzleHeight: 1.725
-  muzzleCameraRightOffset: 0.525
-  muzzleCameraForwardOffset: 0.825
+  muzzleHeight: 0.65
+  muzzleRightOffset: 0.15
+  muzzleForwardOffset: 0.3
   hookCooldown: 0.35
   ignoreMouseWhenPointerOverUi: 1
+  hookVisualSpeed: 70
+  hookFacingLockPadding: 0.15
 --- !u!114 &1438166195506000384
 MonoBehaviour:
   m_ObjectHideFlags: 0

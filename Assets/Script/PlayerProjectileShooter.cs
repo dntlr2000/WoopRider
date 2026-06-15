@@ -2,6 +2,7 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.Serialization;
 
 [RequireComponent(typeof(ThirdPersonController))]
 [RequireComponent(typeof(PlayerEquipment))]
@@ -14,9 +15,11 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     [Header("Muzzle")]
     [SerializeField] private Transform muzzleTransform;
-    [SerializeField] private float muzzleHeight = 1.725f;
-    [SerializeField] private float muzzleCameraRightOffset = 0.675f;
-    [SerializeField] private float muzzleCameraForwardOffset = 0.9f;
+    [SerializeField] private float muzzleHeight = 0.75f;
+    [FormerlySerializedAs("muzzleCameraRightOffset")]
+    [SerializeField] private float muzzleRightOffset = 0.25f;
+    [FormerlySerializedAs("muzzleCameraForwardOffset")]
+    [SerializeField] private float muzzleForwardOffset = 0.35f;
 
     [Header("Projectile")]
     [SerializeField] private float fallbackShotsPerSecond = 5f;
@@ -29,7 +32,9 @@ public class PlayerProjectileShooter : MonoBehaviour
     [SerializeField] private bool ignoreMouseWhenPointerOverUi = true;
 
     private ThirdPersonController controller;
+    private CharacterController characterController;
     private PlayerEquipment equipment;
+    private PlayerEquipmentHookShooter hookShooter;
     private PlayableCharacterAnimationDriver animationDriver;
     private NetworkPlayerAvatarRelay cachedRelay;
     private float nextFireTime;
@@ -38,7 +43,9 @@ public class PlayerProjectileShooter : MonoBehaviour
     {
         // Cache the local movement controller and the active camera reference.
         controller = GetComponent<ThirdPersonController>();
+        characterController = GetComponent<CharacterController>();
         equipment = GetComponent<PlayerEquipment>();
+        hookShooter = GetComponent<PlayerEquipmentHookShooter>();
         animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
         ResolveAimCamera();
     }
@@ -46,7 +53,7 @@ public class PlayerProjectileShooter : MonoBehaviour
     private void Update()
     {
         // Fire once per input press while respecting the controller fire-rate stat.
-        if (!ShouldFireThisFrame() || Time.time < nextFireTime)
+        if (!HasLocalControl() || IsBlockedByHookAction() || !ShouldFireThisFrame() || Time.time < nextFireTime)
         {
             return;
         }
@@ -76,7 +83,7 @@ public class PlayerProjectileShooter : MonoBehaviour
 
         Ray aimRay = cameraToUse.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
         Vector3 aimPoint = ResolveAimPoint(aimRay, GetAttackRange(attackSettings));
-        Vector3 muzzlePosition = ResolveMuzzlePosition(cameraToUse);
+        Vector3 muzzlePosition = ResolveMuzzlePosition();
         float resolvedProjectileSpeed = GetProjectileSpeed(attackSettings);
         float resolvedProjectileRadius = GetProjectileRadius(attackSettings);
         float resolvedProjectileLifeTime = GetProjectileLifeTime(attackSettings);
@@ -101,6 +108,28 @@ public class PlayerProjectileShooter : MonoBehaviour
         }
 
         controller?.FaceCameraForwardImmediate(cameraToUse != null ? cameraToUse.transform : null);
+    }
+
+    private bool HasLocalControl()
+    {
+        // Only the owning network player should read local fire input.
+        if (controller == null)
+        {
+            controller = GetComponent<ThirdPersonController>();
+        }
+
+        return controller == null || controller.HasLocalControl;
+    }
+
+    private bool IsBlockedByHookAction()
+    {
+        // Prevent basic projectile fire while the local hook is travelling or pulling back.
+        if (hookShooter == null)
+        {
+            hookShooter = GetComponent<PlayerEquipmentHookShooter>();
+        }
+
+        return hookShooter != null && hookShooter.IsHookActionActive;
     }
 
     private void TriggerShootAnimation()
@@ -169,19 +198,34 @@ public class PlayerProjectileShooter : MonoBehaviour
         return hitController != null && hitController == controller;
     }
 
-    private Vector3 ResolveMuzzlePosition(Camera cameraToUse)
+    private Vector3 ResolveMuzzlePosition()
     {
-        // Use an explicit muzzle if assigned, otherwise place it near the camera-side shoulder.
+        // Use an explicit muzzle if assigned, otherwise place it on the player body facing direction.
         if (muzzleTransform != null)
         {
             return muzzleTransform.position;
         }
 
-        Transform cameraTransform = cameraToUse.transform;
-        return transform.position +
-            Vector3.up * muzzleHeight +
-            cameraTransform.right * muzzleCameraRightOffset +
-            cameraTransform.forward * muzzleCameraForwardOffset;
+        return ResolveBodyMuzzleBasePosition() +
+            transform.right * muzzleRightOffset +
+            transform.forward * muzzleForwardOffset;
+    }
+
+    private Vector3 ResolveBodyMuzzleBasePosition()
+    {
+        // Anchor fallback muzzle height to the player body, not to the shoulder camera.
+        if (characterController == null)
+        {
+            characterController = GetComponent<CharacterController>();
+        }
+
+        if (characterController == null)
+        {
+            return transform.position + Vector3.up * muzzleHeight;
+        }
+
+        float clampedHeight = Mathf.Clamp(muzzleHeight, 0f, Mathf.Max(0.1f, characterController.height));
+        return transform.position + Vector3.up * clampedHeight;
     }
 
     private bool TrySendNetworkProjectile(Vector3 muzzlePosition, Vector3 aimPoint, float speed, float radius, float lifeTime, out bool usedNetworkPath)

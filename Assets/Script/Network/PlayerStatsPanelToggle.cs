@@ -195,9 +195,9 @@ public class PlayerStatsPanelToggle : MonoBehaviour
     private string GetCurrentEquipmentText()
     {
         // Resolve the local player's current equipment display name for the temporary stats panel.
-        if (localEquipment == null)
+        if (!IsCachedLocalEquipmentValid())
         {
-            localEquipment = FindFirstObjectByType<PlayerEquipment>();
+            localEquipment = ResolveLocalEquipment();
         }
 
         EquipmentDefinition equipment = localEquipment != null ? localEquipment.CurrentEquipment : null;
@@ -207,5 +207,40 @@ public class PlayerStatsPanelToggle : MonoBehaviour
         }
 
         return string.IsNullOrWhiteSpace(equipment.DisplayName) ? equipment.EquipmentId : equipment.DisplayName;
+    }
+
+    private bool IsCachedLocalEquipmentValid()
+    {
+        // Keep cached equipment only while it belongs to the locally controlled player.
+        if (localEquipment == null)
+        {
+            return false;
+        }
+
+        ThirdPersonController controller = localEquipment.GetComponent<ThirdPersonController>();
+        return controller == null || controller.HasLocalControl;
+    }
+
+    private static PlayerEquipment ResolveLocalEquipment()
+    {
+        // Prefer the owned Network PlayerObject equipment, falling back to local offline controllers.
+        NetworkObject localPlayerObject = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening
+            ? NetworkManager.Singleton.SpawnManager?.GetLocalPlayerObject()
+            : null;
+        if (localPlayerObject != null && localPlayerObject.TryGetComponent(out PlayerEquipment equipment))
+        {
+            return equipment;
+        }
+
+        ThirdPersonController[] controllers = FindObjectsByType<ThirdPersonController>(FindObjectsSortMode.None);
+        for (int i = 0; i < controllers.Length; i++)
+        {
+            if (controllers[i] != null && controllers[i].HasLocalControl)
+            {
+                return controllers[i].GetComponent<PlayerEquipment>();
+            }
+        }
+
+        return null;
     }
 }
