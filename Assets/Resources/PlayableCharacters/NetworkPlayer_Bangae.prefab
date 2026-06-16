@@ -415,7 +415,7 @@ MonoBehaviour:
   defaultDefense: 10
   equipmentBreakActionLockDuration: 3
   lowHealthSparkThreshold: 0.2
-  lowHealthSparkPrefab: {fileID: 5925117156057431584, guid: 0d3a2dc2176fee345b9d92ac7a089808, type: 3}
+  lowHealthSparkPrefab: {fileID: 4391332916135280264, guid: 9a6f7cb59ead4712a2e26a0237d8f9c0, type: 3}
   lowHealthSparkAnchor: {fileID: 1911474994192612455}
   lowHealthSparkLocalOffset: {x: 0, y: 1.5, z: 0}
   lowHealthSparkLocalEulerAngles: {x: -20, y: 180, z: 0}

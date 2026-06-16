@@ -6,7 +6,9 @@ using UnityEngine;
 
 public class GameplayPickupManager : NetworkBehaviour
 {
-    private const string DefaultEquipmentSparkResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Sparks/Sparks red";
+    private const string DefaultEquipmentSparkResourcePath = "Effects/CustomEffects/SmokeLeak_RedSparks";
+    private const string DefaultStatBuffEffectResourcePath = "Effects/CustomEffects/Buff_OneShot";
+    private const string DefaultHealingPickupEffectResourcePath = "Effects/CustomEffects/Healing_OneShot";
 
     public static GameplayPickupManager Instance { get; private set; }
 
@@ -22,6 +24,12 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         None = 0,
         BasicHeal = 1
+    }
+
+    private enum PickupEffectKind : byte
+    {
+        StatBuff = 0,
+        Healing = 1
     }
 
     private class PickupSlot
@@ -102,6 +110,15 @@ public class GameplayPickupManager : NetworkBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float functionalPickupChance = 0.25f;
     [SerializeField] private float basicHealPercent = 0.2f;
+
+    [Header("Pickup Effects")]
+    [SerializeField] private GameObject statBuffEffectPrefab;
+    [SerializeField] private GameObject healingPickupEffectPrefab;
+    [SerializeField] private Vector3 pickupEffectWorldOffset = new(0f, 1f, 0f);
+    [SerializeField] private Vector3 pickupEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float pickupEffectScale = 1f;
+    [SerializeField] private float pickupEffectLifetime = 2f;
 
     [Header("Box Items")]
     [SerializeField] private int boxItemCount = 3;
@@ -186,7 +203,11 @@ public class GameplayPickupManager : NetworkBehaviour
     private int nextHookVisualId;
     private int nextLootPickupSlotId;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
+    private GameObject resolvedDefaultStatBuffEffectPrefab;
+    private GameObject resolvedDefaultHealingPickupEffectPrefab;
     private bool triedLoadDefaultEquipmentSparkPrefab;
+    private bool triedLoadDefaultStatBuffEffectPrefab;
+    private bool triedLoadDefaultHealingPickupEffectPrefab;
 
     private void Awake()
     {
@@ -640,11 +661,13 @@ public class GameplayPickupManager : NetworkBehaviour
 
         if (slot.Kind == PickupKind.Functional)
         {
+            FunctionalPickupType collectedFunctionalType = slot.FunctionalType;
             if (!ApplyFunctionalPickup(slot, clientId))
             {
                 return;
             }
 
+            PlayFunctionalPickupEffect(clientId, collectedFunctionalType);
             DeactivatePickup(slotId);
             ScheduleContactPickupRespawn(slotId, slot);
             Debug.Log($"[GameplayPickupManager] Functional pickup collected clientId={clientId} type={slot.FunctionalType}");
@@ -654,10 +677,17 @@ public class GameplayPickupManager : NetworkBehaviour
         float previousMaxHealth = slot.StatType == PlayerStatType.Health
             ? NetworkPlayerCombatState.GetMaxHealthForClient(clientId)
             : 0f;
+        int previousStackCount = statsState != null ? statsState.GetStackCount(clientId, slot.StatType) : 0;
         statsState?.AddStat(clientId, slot.StatType, 1);
+        int currentStackCount = statsState != null ? statsState.GetStackCount(clientId, slot.StatType) : previousStackCount;
         if (slot.StatType == PlayerStatType.Health)
         {
             NetworkPlayerCombatState.AddCurrentHealthForMaxHealthGain(clientId, previousMaxHealth);
+        }
+
+        if (currentStackCount > previousStackCount)
+        {
+            PlayPickupEffectForClient(clientId, PickupEffectKind.StatBuff);
         }
 
         DeactivatePickup(slotId);
@@ -685,6 +715,41 @@ public class GameplayPickupManager : NetworkBehaviour
             FunctionalPickupType.BasicHeal => NetworkPlayerCombatState.TryHealPercent(clientId, Mathf.Max(0f, basicHealPercent)),
             _ => false
         };
+    }
+
+    private void PlayFunctionalPickupEffect(ulong clientId, FunctionalPickupType functionalType)
+    {
+        // Route functional pickup visuals by subtype so future utility items can use different effects.
+        if (functionalType == FunctionalPickupType.BasicHeal)
+        {
+            PlayPickupEffectForClient(clientId, PickupEffectKind.Healing);
+        }
+    }
+
+    private void PlayPickupEffectForClient(ulong clientId, PickupEffectKind effectKind)
+    {
+        // Resolve the server-authoritative player position and replicate a short pickup VFX to all clients.
+        if (!IsServer || !TryGetClientPickupEffectPosition(clientId, out Vector3 position))
+        {
+            return;
+        }
+
+        PlayPickupEffectClientRpc(effectKind, position);
+    }
+
+    private bool TryGetClientPickupEffectPosition(ulong clientId, out Vector3 position)
+    {
+        // Find the current player object so pickup effects appear on the collector instead of the field slot.
+        if (NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.ConnectedClients.TryGetValue(clientId, out NetworkClient client) &&
+            client.PlayerObject != null)
+        {
+            position = client.PlayerObject.transform.position + pickupEffectWorldOffset;
+            return true;
+        }
+
+        position = default;
+        return false;
     }
 
     private void TryRequestLocalPickup()
@@ -2068,6 +2133,89 @@ public class GameplayPickupManager : NetworkBehaviour
         // Toggle local blinking for a box that is close to timed despawn.
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         SetBoxBlink(slot, blinking);
+    }
+
+    [ClientRpc]
+    private void PlayPickupEffectClientRpc(PickupEffectKind effectKind, Vector3 position)
+    {
+        // Spawn stat/heal pickup feedback on every client from the server-approved pickup result.
+        PlayPickupOneShotEffect(ResolvePickupEffectPrefab(effectKind), position, effectKind.ToString());
+    }
+
+    private void PlayPickupOneShotEffect(GameObject effectPrefab, Vector3 position, string effectName)
+    {
+        // Instantiate a temporary pickup effect, force particle systems to play once, and clean it up.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(pickupEffectEulerOffset));
+        effectObject.name = $"Pickup{effectName}Effect";
+        effectObject.transform.localScale *= Mathf.Max(0.01f, pickupEffectScale);
+        effectObject.SetActive(true);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, pickupEffectLifetime));
+    }
+
+    private GameObject ResolvePickupEffectPrefab(PickupEffectKind effectKind)
+    {
+        // Select the correct pickup VFX prefab while keeping each subtype independently replaceable.
+        return effectKind switch
+        {
+            PickupEffectKind.Healing => ResolveHealingPickupEffectPrefab(),
+            _ => ResolveStatBuffEffectPrefab()
+        };
+    }
+
+    private GameObject ResolveStatBuffEffectPrefab()
+    {
+        // Use the inspector-assigned buff VFX first, then fall back to Resources/Effects/CustomEffects.
+        if (statBuffEffectPrefab != null)
+        {
+            return statBuffEffectPrefab;
+        }
+
+        if (!triedLoadDefaultStatBuffEffectPrefab)
+        {
+            triedLoadDefaultStatBuffEffectPrefab = true;
+            resolvedDefaultStatBuffEffectPrefab = Resources.Load<GameObject>(DefaultStatBuffEffectResourcePath);
+        }
+
+        return resolvedDefaultStatBuffEffectPrefab;
+    }
+
+    private GameObject ResolveHealingPickupEffectPrefab()
+    {
+        // Use the inspector-assigned healing VFX first, then fall back to Resources/Effects/CustomEffects.
+        if (healingPickupEffectPrefab != null)
+        {
+            return healingPickupEffectPrefab;
+        }
+
+        if (!triedLoadDefaultHealingPickupEffectPrefab)
+        {
+            triedLoadDefaultHealingPickupEffectPrefab = true;
+            resolvedDefaultHealingPickupEffectPrefab = Resources.Load<GameObject>(DefaultHealingPickupEffectResourcePath);
+        }
+
+        return resolvedDefaultHealingPickupEffectPrefab;
     }
 
     private void CreateLocalVisualSlots()

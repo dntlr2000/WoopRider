@@ -15,7 +15,7 @@ public static class PlayableCharacterPrefabGenerator
     private const string WoopVisualPrefabPath = "Assets/Resources/PlayableCharacters/Woop_WoopRiders_PlayableCharacter.prefab";
     private const string SampleScenePath = "Assets/Scenes/SampleScene.unity";
     private const string DefaultNetworkPrefabsPath = "Assets/DefaultNetworkPrefabs.asset";
-    private const string LowHealthSparkPrefabPath = "Assets/Resources/Effects/Hovl Studio/Magic effects pack/Prefabs/Sparks/Sparks red.prefab";
+    private const string LowHealthSparkPrefabPath = "Assets/Resources/Effects/CustomEffects/SmokeLeak_RedSparks.prefab";
     private const string DamageHitEffectPrefabPath = "Assets/Resources/Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit.prefab";
     private const string BreakExplosionEffectPrefabPath = "Assets/Resources/Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Explosion.prefab";
 

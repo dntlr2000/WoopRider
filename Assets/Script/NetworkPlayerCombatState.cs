@@ -8,7 +8,7 @@ using UnityEngine;
 public class NetworkPlayerCombatState : NetworkBehaviour
 {
     private static readonly Dictionary<ulong, NetworkPlayerCombatState> StatesByClientId = new();
-    private const string DefaultLowHealthSparkResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Sparks/Sparks red";
+    private const string DefaultLowHealthSparkResourcePath = "Effects/CustomEffects/SmokeLeak_RedSparks";
     private const string DefaultDamageHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit";
     private const string DefaultBreakExplosionEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Explosion";
     private const string LowHealthSparkAnchorName = "EffectPoint_Spark";
