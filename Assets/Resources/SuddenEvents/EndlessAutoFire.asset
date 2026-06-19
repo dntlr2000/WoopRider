@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6f7d1d562e2d4c94887502d61d3bd0cc, type: 3}
+  m_Name: EndlessAutoFire
+  m_EditorClassIdentifier: 
+  eventId: endless_auto_fire
+  eventType: 1
+  title: 자동 발사가 멈춰지지 않는다!
+  enabledInPool: 1
+  weight: 1
+  durationOverride: 0

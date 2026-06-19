@@ -25,4 +25,6 @@ MonoBehaviour:
     projectileSpeed: 32
     projectileRadius: 0.12
     projectileLifeTime: 4
+    projectileVisualPrefab: {fileID: 0}
+    projectileVisualResourcePath: fbx/Equip_Bullets/BasicBullet
   visualPrefab: {fileID: 0}

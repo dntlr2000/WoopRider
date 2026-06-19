@@ -9,6 +9,19 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultEquipmentSparkResourcePath = "Effects/CustomEffects/SmokeLeak_RedSparks";
     private const string DefaultStatBuffEffectResourcePath = "Effects/CustomEffects/Buff_OneShot";
     private const string DefaultHealingPickupEffectResourcePath = "Effects/CustomEffects/Healing_OneShot";
+    private const string DefaultAttackUpEffectResourcePath = "Effects/CustomEffects/AttackUp";
+    private const string DefaultDefenceUpEffectResourcePath = "Effects/CustomEffects/DefenceUp";
+    private const string DefaultBoxHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Stones hit";
+    private static readonly PlayerStatType[] OrderedStatPickupTypes =
+    {
+        PlayerStatType.AttackPower,
+        PlayerStatType.Defense,
+        PlayerStatType.Health,
+        PlayerStatType.JumpForce,
+        PlayerStatType.FireRate,
+        PlayerStatType.MoveSpeed,
+        PlayerStatType.Weight
+    };
 
     public static GameplayPickupManager Instance { get; private set; }
 
@@ -23,13 +36,41 @@ public class GameplayPickupManager : NetworkBehaviour
     public enum FunctionalPickupType : byte
     {
         None = 0,
-        BasicHeal = 1
+        BasicHeal = 1,
+        AttackPowerBuff = 2,
+        DamageReductionBuff = 3,
+        MoveSpeedBuff = 4,
+        AutoFireBuff = 5
+    }
+
+    public enum BoxLootKind : byte
+    {
+        Stat = 0,
+        Functional = 1,
+        Equipment = 2
+    }
+
+    [System.Serializable]
+    private class BoxVariantDefinition
+    {
+        public string BoxId = "basic_stat_box";
+        public string DisplayName = "Basic Stat Box";
+        public BoxLootKind LootKind = BoxLootKind.Stat;
+        [Min(0)]
+        public int LootCount = 3;
+        [Min(0.01f)]
+        public float MaxHealth = 100f;
+        [Min(0f)]
+        public float SpawnWeight = 1f;
+        public Color TintColor = Color.white;
     }
 
     private enum PickupEffectKind : byte
     {
         StatBuff = 0,
-        Healing = 1
+        Healing = 1,
+        AttackUp = 2,
+        DefenceUp = 3
     }
 
     private class PickupSlot
@@ -63,15 +104,31 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         public bool Active;
         public string BoxId;
+        public BoxLootKind LootKind;
         public float CurrentHealth;
         public float MaxHealth;
         public PlayerStatType[] LootStats;
+        public FunctionalPickupType[] LootFunctionalTypes;
+        public string[] LootEquipmentIds;
         public Vector3 Position;
         public GameObject Visual;
         public Coroutine RespawnRoutine;
         public Coroutine DespawnRoutine;
         public Coroutine BlinkRoutine;
         public bool Blinking;
+    }
+
+    private readonly struct SuddenEventSelection
+    {
+        public readonly SuddenEventType EventType;
+        public readonly SuddenEventDefinition Definition;
+
+        public SuddenEventSelection(SuddenEventType eventType, SuddenEventDefinition definition)
+        {
+            // Carry the selected event type and optional data asset through activation.
+            EventType = eventType;
+            Definition = definition;
+        }
     }
 
     private enum HookContactKind
@@ -110,10 +167,51 @@ public class GameplayPickupManager : NetworkBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float functionalPickupChance = 0.25f;
     [SerializeField] private float basicHealPercent = 0.2f;
+    [SerializeField] private float attackPowerBuffDuration = 10f;
+    [SerializeField] private float attackPowerBuffMultiplier = 2f;
+    [SerializeField] private float damageReductionBuffDuration = 10f;
+    [Range(0.01f, 1f)]
+    [SerializeField] private float damageReductionTakenMultiplier = 0.5f;
+    [SerializeField] private float moveSpeedBuffDuration = 10f;
+    [SerializeField] private float moveSpeedBuffMultiplier = 2f;
+    [SerializeField] private float autoFireBuffDuration = 10f;
+    [SerializeField] private FunctionalPickupType[] functionalPickupPool =
+    {
+        FunctionalPickupType.BasicHeal,
+        FunctionalPickupType.AttackPowerBuff,
+        FunctionalPickupType.DamageReductionBuff,
+        FunctionalPickupType.MoveSpeedBuff,
+        FunctionalPickupType.AutoFireBuff
+    };
+
+    [Header("Sudden Events")]
+    [SerializeField] private bool suddenEventsEnabled = true;
+    [SerializeField] private float suddenEventStartDelay = 10f;
+    [SerializeField] private float suddenEventDuration = 20f;
+    [SerializeField] private bool loadSuddenEventDefinitionsFromResources = true;
+    [SerializeField] private SuddenEventDefinition[] suddenEventDefinitions;
+    [SerializeField] private SuddenEventType[] fallbackSuddenEventTypes =
+    {
+        SuddenEventType.EndlessAutoFire,
+        SuddenEventType.MixedStatueLoot
+    };
+
+    [Header("Stat Pickup Visual")]
+    [SerializeField] private string statPickupVisualResourcePath = "fbx/Stat_Item/Stat_Item";
+    [SerializeField] private string statPickupTextureResourceRoot = "fbx/Stat_Item";
+    [SerializeField] private string statPickupTextureMaterialName = "Image";
+    [SerializeField] private Vector3 statPickupVisualScale = Vector3.one;
+    [SerializeField] private bool normalizeStatPickupVisualBounds = true;
+    [SerializeField] private float statPickupVisualTargetHeight = 1f;
+    [SerializeField] private bool statPickupTextureAlsoEmission = true;
+    [SerializeField] private Color statPickupEmissionColor = Color.white;
+    [SerializeField] private bool ensureAllStatTypesOnMainSpawn = true;
 
     [Header("Pickup Effects")]
     [SerializeField] private GameObject statBuffEffectPrefab;
     [SerializeField] private GameObject healingPickupEffectPrefab;
+    [SerializeField] private GameObject attackUpEffectPrefab;
+    [SerializeField] private GameObject defenceUpEffectPrefab;
     [SerializeField] private Vector3 pickupEffectWorldOffset = new(0f, 1f, 0f);
     [SerializeField] private Vector3 pickupEffectEulerOffset;
     [Min(0.01f)]
@@ -124,13 +222,61 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private int boxItemCount = 3;
     [SerializeField] private int boxSlotIdBase = 4000;
     [SerializeField] private float boxRespawnDelay = 15f;
-    [SerializeField] private float boxHitRadius = 1.2f;
-    [SerializeField] private float boxTargetHeight = 1.2f;
+    [SerializeField] private float boxHitRadius = 2.4f;
+    [SerializeField] private float boxTargetHeight = 2.4f;
     [SerializeField] private float boxLootScatterRadius = 1.4f;
     [SerializeField] private string basicBoxVisualResourcePath = "fbx/Bangae_Statue";
-    [SerializeField] private Vector3 basicBoxVisualScale = Vector3.one;
+    [SerializeField] private Vector3 basicBoxVisualScale = new(2f, 2f, 2f);
+    [SerializeField] private string basicBoxCleanTextureResourcePath = "fbx/BgStatue_Clean";
+    [SerializeField] private string basicBoxHalfBreakTextureResourcePath = "fbx/BgStatue_Half-break";
+    [SerializeField] private string basicBoxFullBreakTextureResourcePath = "fbx/BgStatue_Full-break";
+    [SerializeField] private string basicBoxTextureExcludedMaterialName = "Rock_Eye";
+    [Range(0f, 1f)]
+    [SerializeField] private float basicBoxHalfBreakThreshold = 0.66f;
+    [Range(0f, 1f)]
+    [SerializeField] private float basicBoxFullBreakThreshold = 0.33f;
     [SerializeField] private float basicBoxMaxHealth = 100f;
     [SerializeField] private int basicBoxLootCount = 3;
+    [SerializeField] private BoxVariantDefinition[] boxVariants =
+    {
+        new()
+        {
+            BoxId = "basic_stat_box",
+            DisplayName = "Basic Stat Box",
+            LootKind = BoxLootKind.Stat,
+            LootCount = 3,
+            MaxHealth = 100f,
+            SpawnWeight = 1f,
+            TintColor = Color.white
+        },
+        new()
+        {
+            BoxId = "heal_box",
+            DisplayName = "Heal Box",
+            LootKind = BoxLootKind.Functional,
+            LootCount = 2,
+            MaxHealth = 80f,
+            SpawnWeight = 0.45f,
+            TintColor = new Color(1f, 0.35f, 0.55f)
+        },
+        new()
+        {
+            BoxId = "equipment_box",
+            DisplayName = "Equipment Box",
+            LootKind = BoxLootKind.Equipment,
+            LootCount = 1,
+            MaxHealth = 140f,
+            SpawnWeight = 0.25f,
+            TintColor = new Color(0.25f, 0.8f, 1f)
+        }
+    };
+
+    [Header("Box Hit Effect")]
+    [SerializeField] private GameObject boxHitEffectPrefab;
+    [SerializeField] private Vector3 boxHitEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float boxHitEffectScale = 1f;
+    [SerializeField] private float boxHitEffectLifetime = 2f;
 
     [Header("Final Match Objective")]
     [SerializeField] private int finalObjectiveSlotIndex = 1000;
@@ -202,12 +348,30 @@ public class GameplayPickupManager : NetworkBehaviour
     private float nextLocalRequestTime;
     private int nextHookVisualId;
     private int nextLootPickupSlotId;
+    private Coroutine suddenEventRoutine;
+    private SuddenEventType activeSuddenEvent = SuddenEventType.None;
+    private float activeSuddenEventEndTime;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
     private GameObject resolvedDefaultStatBuffEffectPrefab;
     private GameObject resolvedDefaultHealingPickupEffectPrefab;
+    private GameObject resolvedDefaultAttackUpEffectPrefab;
+    private GameObject resolvedDefaultDefenceUpEffectPrefab;
+    private GameObject resolvedDefaultBoxHitEffectPrefab;
+    private Texture2D resolvedBasicBoxCleanTexture;
+    private Texture2D resolvedBasicBoxHalfBreakTexture;
+    private Texture2D resolvedBasicBoxFullBreakTexture;
+    private GameObject resolvedStatPickupVisualPrefab;
+    private readonly Dictionary<PlayerStatType, Texture2D> resolvedStatPickupTextures = new();
+    private readonly HashSet<PlayerStatType> triedLoadStatPickupTextures = new();
     private bool triedLoadDefaultEquipmentSparkPrefab;
     private bool triedLoadDefaultStatBuffEffectPrefab;
     private bool triedLoadDefaultHealingPickupEffectPrefab;
+    private bool triedLoadDefaultAttackUpEffectPrefab;
+    private bool triedLoadDefaultDefenceUpEffectPrefab;
+    private bool triedLoadDefaultBoxHitEffectPrefab;
+    private bool triedLoadBasicBoxTextures;
+    private bool triedLoadStatPickupVisualPrefab;
+    private bool warnedMissingStatPickupMaterial;
 
     private void Awake()
     {
@@ -249,6 +413,8 @@ public class GameplayPickupManager : NetworkBehaviour
 
     public override void OnNetworkDespawn()
     {
+        StopSuddenEventSchedule();
+
         // 서버 전용 이벤트 구독을 해제해 재시작/씬 정리 때 중복 호출을 방지.
         if (IsServer && matchStateController != null && matchStateController.IsSpawned)
         {
@@ -263,6 +429,11 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void Update()
     {
+        if (IsServer)
+        {
+            UpdateActiveSuddenEvent();
+        }
+
         // 서버는 서버 기준 위치로 자동 획득을 시도하고, 클라이언트는 자신의 위치 기준으로 획득 요청을 보낸다.
         if (IsServer && Time.time >= nextScanTime)
         {
@@ -294,11 +465,13 @@ public class GameplayPickupManager : NetworkBehaviour
         switch (state)
         {
             case NetworkMatchState.Lobby:
+                StopSuddenEventSchedule();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 statsState?.ResetStats();
                 break;
             case NetworkMatchState.MatchMain:
+                StopSuddenEventSchedule();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 NetworkPlayerEquipmentState.EquipDefaultForAll();
@@ -307,12 +480,15 @@ public class GameplayPickupManager : NetworkBehaviour
                 SpawnMainMatchPickups();
                 SpawnEquipmentPickups();
                 SpawnBoxItems();
+                StartSuddenEventSchedule();
                 break;
             case NetworkMatchState.FinalTransition:
+                StopSuddenEventSchedule();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 break;
             case NetworkMatchState.FinalMatch:
+                StopSuddenEventSchedule();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
@@ -320,10 +496,283 @@ public class GameplayPickupManager : NetworkBehaviour
                 SpawnFinalObjective();
                 break;
             case NetworkMatchState.Result:
+                StopSuddenEventSchedule();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 break;
         }
+    }
+
+    private void StartSuddenEventSchedule()
+    {
+        // Start the one-shot sudden event timer for the current main match.
+        StopSuddenEventSchedule();
+        if (!suddenEventsEnabled)
+        {
+            return;
+        }
+
+        suddenEventRoutine = StartCoroutine(TriggerSuddenEventAfterDelay(Mathf.Max(0f, suddenEventStartDelay)));
+    }
+
+    private void StopSuddenEventSchedule()
+    {
+        // Stop pending or active sudden event state when the main match ends or the manager despawns.
+        if (suddenEventRoutine != null)
+        {
+            StopCoroutine(suddenEventRoutine);
+            suddenEventRoutine = null;
+        }
+
+        activeSuddenEvent = SuddenEventType.None;
+        activeSuddenEventEndTime = 0f;
+    }
+
+    private IEnumerator TriggerSuddenEventAfterDelay(float delay)
+    {
+        // Wait from main-match start, then activate one random enabled sudden event.
+        if (delay > 0f)
+        {
+            yield return new WaitForSeconds(delay);
+        }
+
+        suddenEventRoutine = null;
+        if (!ShouldTriggerSuddenEvent())
+        {
+            yield break;
+        }
+
+        ActivateSuddenEvent(ChooseRandomSuddenEvent());
+    }
+
+    private bool ShouldTriggerSuddenEvent()
+    {
+        // Confirm sudden events are still enabled and the game is still in the main match.
+        return IsServer &&
+            suddenEventsEnabled &&
+            matchStateController != null &&
+            matchStateController.State.Value == NetworkMatchState.MatchMain;
+    }
+
+    private SuddenEventSelection ChooseRandomSuddenEvent()
+    {
+        // Choose a weighted event definition first, then fall back to simple event ids.
+        List<SuddenEventDefinition> definitions = ResolveSuddenEventDefinitions();
+        if (HasAnySuddenEventDefinition(definitions))
+        {
+            return TryChooseDefinitionSuddenEvent(definitions, out SuddenEventSelection definitionSelection)
+                ? definitionSelection
+                : new SuddenEventSelection(SuddenEventType.None, null);
+        }
+
+        return ChooseFallbackSuddenEvent();
+    }
+
+    private bool TryChooseDefinitionSuddenEvent(List<SuddenEventDefinition> definitions, out SuddenEventSelection selection)
+    {
+        // Choose from ScriptableObject definitions so larger event lists can be edited as data assets.
+        selection = default;
+        float totalWeight = 0f;
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            SuddenEventDefinition definition = definitions[i];
+            if (IsUsableSuddenEventDefinition(definition))
+            {
+                totalWeight += Mathf.Max(0f, definition.Weight);
+            }
+        }
+
+        if (totalWeight <= 0f)
+        {
+            return false;
+        }
+
+        float roll = Random.Range(0f, totalWeight);
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            SuddenEventDefinition definition = definitions[i];
+            if (!IsUsableSuddenEventDefinition(definition))
+            {
+                continue;
+            }
+
+            roll -= Mathf.Max(0f, definition.Weight);
+            if (roll <= 0f)
+            {
+                selection = new SuddenEventSelection(definition.EventType, definition);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasAnySuddenEventDefinition(List<SuddenEventDefinition> definitions)
+    {
+        // Treat assigned or resource-loaded definitions as the authoritative event list.
+        if (definitions == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            if (definitions[i] != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private List<SuddenEventDefinition> ResolveSuddenEventDefinitions()
+    {
+        // Combine inspector-assigned definitions and optional Resources/SuddenEvents assets.
+        List<SuddenEventDefinition> definitions = new();
+        if (suddenEventDefinitions != null)
+        {
+            definitions.AddRange(suddenEventDefinitions);
+        }
+
+        if (loadSuddenEventDefinitionsFromResources)
+        {
+            definitions.AddRange(Resources.LoadAll<SuddenEventDefinition>("SuddenEvents"));
+        }
+
+        return definitions;
+    }
+
+    private static bool IsUsableSuddenEventDefinition(SuddenEventDefinition definition)
+    {
+        // Accept enabled definitions with a known event type and positive random weight.
+        return definition != null &&
+            definition.EnabledInPool &&
+            definition.EventType != SuddenEventType.None &&
+            definition.Weight > 0f;
+    }
+
+    private SuddenEventSelection ChooseFallbackSuddenEvent()
+    {
+        // Preserve current behavior when no ScriptableObject event definitions exist yet.
+        if (fallbackSuddenEventTypes == null || fallbackSuddenEventTypes.Length == 0)
+        {
+            return new SuddenEventSelection(SuddenEventType.EndlessAutoFire, null);
+        }
+
+        for (int attempts = 0; attempts < fallbackSuddenEventTypes.Length; attempts++)
+        {
+            SuddenEventType candidate = fallbackSuddenEventTypes[Random.Range(0, fallbackSuddenEventTypes.Length)];
+            if (candidate != SuddenEventType.None)
+            {
+                return new SuddenEventSelection(candidate, null);
+            }
+        }
+
+        return new SuddenEventSelection(SuddenEventType.EndlessAutoFire, null);
+    }
+
+    private void ActivateSuddenEvent(SuddenEventSelection selection)
+    {
+        // Activate the selected event for the configured duration and notify all players.
+        SuddenEventType eventKind = selection.EventType;
+        if (eventKind == SuddenEventType.None)
+        {
+            return;
+        }
+
+        float duration = ResolveSuddenEventDuration(selection.Definition);
+        if (duration <= 0f)
+        {
+            return;
+        }
+
+        activeSuddenEvent = eventKind;
+        activeSuddenEventEndTime = Time.time + duration;
+
+        string title = ResolveSuddenEventTitle(selection);
+        matchStateController?.ShowNoticeToAll(title, 4f);
+        Debug.Log($"[GameplayPickupManager] Sudden event started kind={eventKind} duration={duration:0.0}s title={title}");
+        UpdateActiveSuddenEvent();
+    }
+
+    private float ResolveSuddenEventDuration(SuddenEventDefinition definition)
+    {
+        // Keep sudden events inside the remaining main-match window.
+        float configuredDuration = Mathf.Max(0f, definition != null
+            ? definition.ResolveDuration(suddenEventDuration)
+            : suddenEventDuration);
+        if (matchStateController == null)
+        {
+            return configuredDuration;
+        }
+
+        float remainingMainTime = Mathf.Max(0f, matchStateController.RemainingTime.Value);
+        return remainingMainTime > 0f ? Mathf.Min(configuredDuration, remainingMainTime) : configuredDuration;
+    }
+
+    private static string ResolveSuddenEventTitle(SuddenEventSelection selection)
+    {
+        // Convert event ids into temporary player-facing notice titles.
+        if (selection.Definition != null && !string.IsNullOrWhiteSpace(selection.Definition.Title))
+        {
+            return selection.Definition.Title;
+        }
+
+        return selection.EventType switch
+        {
+            SuddenEventType.EndlessAutoFire => "자동 발사가 멈춰지지 않는다!",
+            SuddenEventType.MixedStatueLoot => "석상의 내용물이 제각각이다!",
+            _ => "돌발 이벤트 발생!"
+        };
+    }
+
+    private void UpdateActiveSuddenEvent()
+    {
+        // Tick active sudden events and apply any repeating effects they need.
+        if (activeSuddenEvent == SuddenEventType.None)
+        {
+            return;
+        }
+
+        if (!IsSuddenEventActive())
+        {
+            ClearActiveSuddenEvent();
+            return;
+        }
+
+        if (activeSuddenEvent == SuddenEventType.EndlessAutoFire)
+        {
+            NetworkPlayerCombatState.ApplyAutoFireBuffUntilForAll(activeSuddenEventEndTime, "sudden-event");
+        }
+    }
+
+    private bool IsSuddenEventActive()
+    {
+        // Check whether the current sudden event should still affect main-match gameplay.
+        return IsServer &&
+            suddenEventsEnabled &&
+            matchStateController != null &&
+            matchStateController.State.Value == NetworkMatchState.MatchMain &&
+            Time.time < activeSuddenEventEndTime;
+    }
+
+    private bool IsMixedBoxLootSuddenEventActive()
+    {
+        // Mixed statue loot only affects boxes while that sudden event is active.
+        return activeSuddenEvent == SuddenEventType.MixedStatueLoot && IsSuddenEventActive();
+    }
+
+    private void ClearActiveSuddenEvent()
+    {
+        // Clear local event state once the event expires or the main match ends.
+        if (activeSuddenEvent != SuddenEventType.None)
+        {
+            Debug.Log($"[GameplayPickupManager] Sudden event ended kind={activeSuddenEvent}");
+        }
+
+        activeSuddenEvent = SuddenEventType.None;
+        activeSuddenEventEndTime = 0f;
     }
 
     private void SpawnMainMatchPickups()
@@ -331,10 +780,22 @@ public class GameplayPickupManager : NetworkBehaviour
         // 메인 경기용 스탯 아이템 슬롯을 랜덤 위치와 랜덤 스탯으로 활성화.
         for (int i = 0; i < statPickupCount; i++)
         {
-            ActivateRandomContactPickup(i, GetRandomSpawnPosition());
+            ActivateMainMatchContactPickup(i, GetRandomSpawnPosition());
         }
 
         Debug.Log($"[GameplayPickupManager] Main match pickups spawned count={statPickupCount}");
+    }
+
+    private void ActivateMainMatchContactPickup(int slotId, Vector3 position)
+    {
+        // Guarantee one visible sample of each stat pickup type during tests, then use the normal random pool.
+        if (ensureAllStatTypesOnMainSpawn && slotId < OrderedStatPickupTypes.Length)
+        {
+            ActivateStatPickup(slotId, OrderedStatPickupTypes[slotId], position);
+            return;
+        }
+
+        ActivateRandomContactPickup(slotId, position);
     }
 
     private void SpawnFinalObjective()
@@ -383,6 +844,12 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void ActivateFunctionalPickup(int slotId, FunctionalPickupType functionalType, Vector3 position, bool respawnOnCollect = true)
     {
+        // Activate a functional pickup with normal gravity and no launch impulse.
+        ActivateFunctionalPickup(slotId, functionalType, position, respawnOnCollect, Vector3.zero);
+    }
+
+    private void ActivateFunctionalPickup(int slotId, FunctionalPickupType functionalType, Vector3 position, bool respawnOnCollect, Vector3 initialVelocity)
+    {
         // Activate a contact-collected functional item such as the current basic heal pickup.
         PickupSlot slot = GetOrCreateSlot(slotId);
         slot.Active = true;
@@ -397,7 +864,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         SetPickupVisualClientRpc(slotId, true, position, slot.StatType, PickupKind.Functional, default, functionalType);
         StartPickupDespawnTimer(slotId);
-        StartPickupPhysics(slotId, Vector3.zero);
+        StartPickupPhysics(slotId, initialVelocity);
     }
 
     private void SpawnEquipmentPickups()
@@ -424,27 +891,29 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void SpawnBoxItems()
     {
-        // Spawn destructible basic boxes that pre-roll their stat loot on the server.
+        // Spawn destructible boxes that pre-roll loot according to their selected variant.
         for (int i = 0; i < boxItemCount; i++)
         {
-            ActivateBasicBoxItem(boxSlotIdBase + i, GetRandomSpawnPosition());
+            ActivateBoxItem(boxSlotIdBase + i, GetRandomSpawnPosition(), ChooseRandomBoxVariant());
         }
 
         Debug.Log($"[GameplayPickupManager] Box items spawned count={boxItemCount}");
     }
 
-    private void ActivateBasicBoxItem(int slotId, Vector3 position)
+    private void ActivateBoxItem(int slotId, Vector3 position, BoxVariantDefinition variant)
     {
-        // Initialize a basic destructible box with enough health for five basic weapon hits.
+        // Initialize a destructible box with variant-specific health, tint, and pre-rolled loot.
+        BoxVariantDefinition resolvedVariant = ResolveBoxVariant(variant);
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.Active = true;
-        slot.BoxId = "basic_box";
-        slot.MaxHealth = Mathf.Max(1f, basicBoxMaxHealth);
+        slot.BoxId = resolvedVariant.BoxId;
+        slot.LootKind = resolvedVariant.LootKind;
+        slot.MaxHealth = Mathf.Max(1f, resolvedVariant.MaxHealth);
         slot.CurrentHealth = slot.MaxHealth;
-        slot.LootStats = GenerateStatLoot(Mathf.Clamp(basicBoxLootCount, 0, 3));
+        PreRollBoxLoot(slot, resolvedVariant);
         slot.Position = position;
 
-        SetBoxVisualClientRpc(slotId, true, position, 1f);
+        SetBoxVisualClientRpc(slotId, true, position, 1f, new FixedString64Bytes(slot.BoxId));
         StartBoxDespawnTimer(slotId);
     }
 
@@ -458,7 +927,7 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         slot.Active = false;
-        SetBoxVisualClientRpc(slotId, false, Vector3.zero, 0f);
+        SetBoxVisualClientRpc(slotId, false, Vector3.zero, 0f, new FixedString64Bytes(slot.BoxId ?? string.Empty));
     }
 
     private void ClearAllBoxItems()
@@ -481,7 +950,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
             slot.Active = false;
             SetBoxBlinkClientRpc(pair.Key, false);
-            SetBoxVisualClientRpc(pair.Key, false, Vector3.zero, 0f);
+            SetBoxVisualClientRpc(pair.Key, false, Vector3.zero, 0f, new FixedString64Bytes(slot.BoxId ?? string.Empty));
         }
     }
 
@@ -504,6 +973,12 @@ public class GameplayPickupManager : NetworkBehaviour
     }
 
     private void ActivateEquipmentPickup(int slotId, EquipmentDefinition equipment, Vector3 position, float healthPercent = 1f, bool respawnOnDespawn = true)
+    {
+        // Activate a hook-only equipment pickup with normal gravity and no launch impulse.
+        ActivateEquipmentPickup(slotId, equipment, position, healthPercent, respawnOnDespawn, Vector3.zero);
+    }
+
+    private void ActivateEquipmentPickup(int slotId, EquipmentDefinition equipment, Vector3 position, float healthPercent, bool respawnOnDespawn, Vector3 initialVelocity)
     {
         // Activate a hook-only equipment pickup slot, keeping the equipment's stored health ratio.
         if (equipment == null)
@@ -528,7 +1003,7 @@ public class GameplayPickupManager : NetworkBehaviour
         SetPickupVisualClientRpc(slotId, true, position, slot.StatType, PickupKind.Equipment, new FixedString64Bytes(equipment.EquipmentId), FunctionalPickupType.None);
         SetEquipmentHealthVisualClientRpc(slotId, slot.EquipmentHealthPercent);
         StartPickupDespawnTimer(slotId);
-        StartPickupPhysics(slotId, Vector3.zero);
+        StartPickupPhysics(slotId, initialVelocity);
     }
 
     private void DeactivatePickup(int slotId, bool stopDespawnTimer = true)
@@ -713,6 +1188,10 @@ public class GameplayPickupManager : NetworkBehaviour
         return slot.FunctionalType switch
         {
             FunctionalPickupType.BasicHeal => NetworkPlayerCombatState.TryHealPercent(clientId, Mathf.Max(0f, basicHealPercent)),
+            FunctionalPickupType.AttackPowerBuff => NetworkPlayerCombatState.TryApplyAttackBuff(clientId, Mathf.Max(0f, attackPowerBuffDuration), Mathf.Max(0.01f, attackPowerBuffMultiplier)),
+            FunctionalPickupType.DamageReductionBuff => NetworkPlayerCombatState.TryApplyDamageReductionBuff(clientId, Mathf.Max(0f, damageReductionBuffDuration), Mathf.Clamp(damageReductionTakenMultiplier, 0.01f, 1f)),
+            FunctionalPickupType.MoveSpeedBuff => NetworkPlayerCombatState.TryApplyMoveSpeedBuff(clientId, Mathf.Max(0f, moveSpeedBuffDuration), Mathf.Max(0.01f, moveSpeedBuffMultiplier)),
+            FunctionalPickupType.AutoFireBuff => NetworkPlayerCombatState.TryApplyAutoFireBuff(clientId, Mathf.Max(0f, autoFireBuffDuration)),
             _ => false
         };
     }
@@ -723,7 +1202,10 @@ public class GameplayPickupManager : NetworkBehaviour
         if (functionalType == FunctionalPickupType.BasicHeal)
         {
             PlayPickupEffectForClient(clientId, PickupEffectKind.Healing);
+            return;
         }
+
+        // Attack, defense, movement, and auto-fire buff state is driven by NetworkPlayerCombatState.
     }
 
     private void PlayPickupEffectForClient(ulong clientId, PickupEffectKind effectKind)
@@ -1315,7 +1797,7 @@ public class GameplayPickupManager : NetworkBehaviour
         return slotId >= 0;
     }
 
-    public bool TryApplyBoxDamage(int slotId, float damage, ulong attackerClientId)
+    public bool TryApplyBoxDamage(int slotId, float damage, ulong attackerClientId, Vector3 hitPoint)
     {
         // Apply server-authoritative damage to a destructible box and drop its pre-rolled loot on break.
         if (!IsServer || damage <= 0f)
@@ -1331,7 +1813,8 @@ public class GameplayPickupManager : NetworkBehaviour
 
         slot.CurrentHealth = Mathf.Max(0f, slot.CurrentHealth - damage);
         float healthPercent = slot.MaxHealth > 0f ? Mathf.Clamp01(slot.CurrentHealth / slot.MaxHealth) : 0f;
-        SetBoxVisualClientRpc(slotId, true, slot.Position, healthPercent);
+        SetBoxVisualClientRpc(slotId, true, slot.Position, healthPercent, new FixedString64Bytes(slot.BoxId ?? string.Empty));
+        PlayBoxHitEffectClientRpc(ResolveBoxHitEffectPoint(slot, hitPoint));
         Debug.Log($"[GameplayPickupManager] Box damaged slot={slotId} attacker={attackerClientId} damage={damage:0.0} health={slot.CurrentHealth:0.0}");
 
         if (slot.CurrentHealth <= 0f)
@@ -1342,6 +1825,19 @@ public class GameplayPickupManager : NetworkBehaviour
 
         StartBoxDespawnTimer(slotId);
         return true;
+    }
+
+    private Vector3 ResolveBoxHitEffectPoint(BoxSlot slot, Vector3 hitPoint)
+    {
+        // Prefer the projectile impact point and fall back to the visible upper body of the box.
+        if (IsFinite(hitPoint))
+        {
+            return hitPoint;
+        }
+
+        return slot != null
+            ? slot.Position + Vector3.up * Mathf.Max(0f, boxTargetHeight)
+            : Vector3.zero;
     }
 
     public bool TryFindDamageableEquipment(Vector3 origin, Vector3 direction, float maxDistance, float projectileRadius, out int slotId, out float hitDistance, out Vector3 hitPoint)
@@ -1406,35 +1902,147 @@ public class GameplayPickupManager : NetworkBehaviour
         return true;
     }
 
+    public int ApplySplashDamage(Vector3 center, float radius, float baseDamage, ulong attackerClientId, float minimumMultiplier)
+    {
+        // Apply distance-falloff splash damage to destructible boxes and field equipment drops.
+        if (!IsServer || radius <= 0f || baseDamage <= 0f)
+        {
+            return 0;
+        }
+
+        int hitCount = 0;
+        float resolvedRadius = Mathf.Max(0.01f, radius);
+        float resolvedMinimumMultiplier = Mathf.Clamp01(minimumMultiplier);
+
+        List<int> boxTargets = new();
+        foreach (KeyValuePair<int, BoxSlot> pair in boxSlots)
+        {
+            BoxSlot slot = pair.Value;
+            if (slot != null && slot.Active && slot.CurrentHealth > 0f)
+            {
+                boxTargets.Add(pair.Key);
+            }
+        }
+
+        List<int> equipmentTargets = new();
+        foreach (KeyValuePair<int, PickupSlot> pair in slots)
+        {
+            if (IsDamageableEquipmentSlot(pair.Value))
+            {
+                equipmentTargets.Add(pair.Key);
+            }
+        }
+
+        for (int i = 0; i < boxTargets.Count; i++)
+        {
+            int slotId = boxTargets[i];
+            BoxSlot slot = GetOrCreateBoxSlot(slotId);
+            if (TryResolveBoxSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage, out Vector3 hitPoint) &&
+                TryApplyBoxDamage(slotId, damage, attackerClientId, hitPoint))
+            {
+                hitCount++;
+            }
+        }
+
+        for (int i = 0; i < equipmentTargets.Count; i++)
+        {
+            int slotId = equipmentTargets[i];
+            PickupSlot slot = GetOrCreateSlot(slotId);
+            if (TryResolveEquipmentSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage) &&
+                TryApplyEquipmentDamage(slotId, damage, attackerClientId))
+            {
+                hitCount++;
+            }
+        }
+
+        return hitCount;
+    }
+
+    private bool TryResolveBoxSplashDamage(BoxSlot slot, Vector3 center, float radius, float baseDamage, float minimumMultiplier, out float damage, out Vector3 hitPoint)
+    {
+        // Calculate one box's explosion falloff using its visible target point.
+        damage = 0f;
+        hitPoint = default;
+        if (slot == null || !slot.Active || slot.CurrentHealth <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, boxTargetHeight);
+        float targetRadius = Mathf.Max(0.1f, boxHitRadius);
+        hitPoint = ResolveSplashSurfacePoint(center, targetPoint, targetRadius);
+        return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
+    }
+
+    private bool TryResolveEquipmentSplashDamage(PickupSlot slot, Vector3 center, float radius, float baseDamage, float minimumMultiplier, out float damage)
+    {
+        // Calculate one field equipment drop's explosion falloff from its pickup target point.
+        damage = 0f;
+        if (!IsDamageableEquipmentSlot(slot))
+        {
+            return false;
+        }
+
+        Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight);
+        float targetRadius = Mathf.Max(0.1f, equipmentHitRadius);
+        return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
+    }
+
+    private static bool TryResolveSplashDamage(Vector3 center, float radius, float baseDamage, float minimumMultiplier, Vector3 targetPoint, float targetRadius, out float damage)
+    {
+        // Convert distance to the target surface into a 100%-to-minimum splash damage value.
+        damage = 0f;
+        float distance = Mathf.Max(0f, Vector3.Distance(center, targetPoint) - Mathf.Max(0f, targetRadius));
+        if (distance > radius)
+        {
+            return false;
+        }
+
+        float normalizedDistance = Mathf.Clamp01(distance / Mathf.Max(0.01f, radius));
+        damage = baseDamage * Mathf.Lerp(1f, Mathf.Clamp01(minimumMultiplier), normalizedDistance);
+        return damage > 0f;
+    }
+
+    private static Vector3 ResolveSplashSurfacePoint(Vector3 center, Vector3 targetPoint, float targetRadius)
+    {
+        // Place box hit feedback near the surface closest to the explosion center.
+        Vector3 direction = center - targetPoint;
+        float distance = direction.magnitude;
+        if (distance <= 0.0001f)
+        {
+            return targetPoint;
+        }
+
+        return targetPoint + direction.normalized * Mathf.Min(Mathf.Max(0f, targetRadius), distance);
+    }
+
     private void BreakBoxItem(int slotId, ulong attackerClientId)
     {
-        // Convert a destroyed box into its pre-selected stat loot and schedule a replacement box.
+        // Convert a destroyed box into its pre-selected variant loot and schedule a replacement box.
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         Vector3 dropCenter = slot.Position;
-        PlayerStatType[] lootStats = slot.LootStats ?? GenerateStatLoot(Mathf.Clamp(basicBoxLootCount, 0, 3));
+        BoxLootKind lootKind = slot.LootKind;
+        PlayerStatType[] lootStats = slot.LootStats ?? System.Array.Empty<PlayerStatType>();
+        FunctionalPickupType[] lootFunctionalTypes = slot.LootFunctionalTypes ?? System.Array.Empty<FunctionalPickupType>();
+        string[] lootEquipmentIds = slot.LootEquipmentIds ?? System.Array.Empty<string>();
 
         DeactivateBoxItem(slotId);
-        for (int i = 0; i < lootStats.Length; i++)
-        {
-            ActivateStatPickup(
-                GetNextLootPickupSlotId(),
-                lootStats[i],
-                ResolveBoxLootLaunchPosition(dropCenter),
-                respawnOnCollect: false,
-                initialVelocity: ResolveBoxLootLaunchVelocity(i, lootStats.Length));
-        }
+        bool useMixedLoot = IsMixedBoxLootSuddenEventActive();
+        int lootCount = useMixedLoot
+            ? DropMixedBoxLoot(dropCenter, ResolveBoxLootCount(slot))
+            : DropBoxLoot(dropCenter, lootKind, lootStats, lootFunctionalTypes, lootEquipmentIds);
 
         if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
         {
             slot.RespawnRoutine = StartCoroutine(RespawnBoxItemAfterDelay(slotId));
         }
 
-        Debug.Log($"[GameplayPickupManager] Box broken slot={slotId} attacker={attackerClientId} lootCount={lootStats.Length}");
+        Debug.Log($"[GameplayPickupManager] Box broken slot={slotId} attacker={attackerClientId} boxId={slot.BoxId} lootKind={lootKind} mixedLoot={useMixedLoot} lootCount={lootCount}");
     }
 
     private IEnumerator RespawnBoxItemAfterDelay(int slotId)
     {
-        // Respawn a basic destructible box after a short delay during the main match.
+        // Respawn a destructible box after a short delay during the main match.
         yield return new WaitForSeconds(boxRespawnDelay);
 
         if (!IsServer || matchStateController == null || matchStateController.State.Value != NetworkMatchState.MatchMain)
@@ -1444,7 +2052,261 @@ public class GameplayPickupManager : NetworkBehaviour
 
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.RespawnRoutine = null;
-        ActivateBasicBoxItem(slotId, GetRandomSpawnPosition());
+        ActivateBoxItem(slotId, GetRandomSpawnPosition(), ChooseRandomBoxVariant());
+    }
+
+    private int DropBoxLoot(Vector3 dropCenter, BoxLootKind lootKind, PlayerStatType[] lootStats, FunctionalPickupType[] lootFunctionalTypes, string[] lootEquipmentIds)
+    {
+        // Dispatch a broken box's pre-rolled loot into the matching pickup activation path.
+        return lootKind switch
+        {
+            BoxLootKind.Functional => DropFunctionalBoxLoot(dropCenter, lootFunctionalTypes),
+            BoxLootKind.Equipment => DropEquipmentBoxLoot(dropCenter, lootEquipmentIds),
+            _ => DropStatBoxLoot(dropCenter, lootStats)
+        };
+    }
+
+    private int DropStatBoxLoot(Vector3 dropCenter, PlayerStatType[] lootStats)
+    {
+        // Spawn stat loot with an outward launch impulse from the broken box.
+        int lootCount = lootStats != null ? lootStats.Length : 0;
+        for (int i = 0; i < lootCount; i++)
+        {
+            ActivateStatPickup(
+                GetNextLootPickupSlotId(),
+                lootStats[i],
+                ResolveBoxLootLaunchPosition(dropCenter),
+                respawnOnCollect: false,
+                initialVelocity: ResolveBoxLootLaunchVelocity(i, lootCount));
+        }
+
+        return lootCount;
+    }
+
+    private int DropFunctionalBoxLoot(Vector3 dropCenter, FunctionalPickupType[] lootFunctionalTypes)
+    {
+        // Spawn functional loot with the same outward launch impulse as stat loot.
+        int lootCount = lootFunctionalTypes != null ? lootFunctionalTypes.Length : 0;
+        for (int i = 0; i < lootCount; i++)
+        {
+            ActivateFunctionalPickup(
+                GetNextLootPickupSlotId(),
+                lootFunctionalTypes[i],
+                ResolveBoxLootLaunchPosition(dropCenter),
+                respawnOnCollect: false,
+                initialVelocity: ResolveBoxLootLaunchVelocity(i, lootCount));
+        }
+
+        return lootCount;
+    }
+
+    private int DropEquipmentBoxLoot(Vector3 dropCenter, string[] lootEquipmentIds)
+    {
+        // Spawn equipment loot with preserved full durability and no automatic respawn from the loot slot.
+        int spawnedCount = 0;
+        int lootCount = lootEquipmentIds != null ? lootEquipmentIds.Length : 0;
+        for (int i = 0; i < lootCount; i++)
+        {
+            if (!EquipmentCatalog.TryGet(lootEquipmentIds[i], out EquipmentDefinition equipment))
+            {
+                continue;
+            }
+
+            ActivateEquipmentPickup(
+                GetNextLootPickupSlotId(),
+                equipment,
+                ResolveBoxLootLaunchPosition(dropCenter),
+                healthPercent: 1f,
+                respawnOnDespawn: false,
+                initialVelocity: ResolveBoxLootLaunchVelocity(i, lootCount));
+            spawnedCount++;
+        }
+
+        return spawnedCount;
+    }
+
+    private int DropMixedBoxLoot(Vector3 dropCenter, int lootCount)
+    {
+        // Spawn each box loot slot from stat, equipment, or functional categories with equal probability.
+        int resolvedCount = Mathf.Max(0, lootCount);
+        int spawnedCount = 0;
+        for (int i = 0; i < resolvedCount; i++)
+        {
+            if (DropSingleMixedBoxLoot(dropCenter, i, resolvedCount))
+            {
+                spawnedCount++;
+            }
+        }
+
+        return spawnedCount;
+    }
+
+    private bool DropSingleMixedBoxLoot(Vector3 dropCenter, int index, int count)
+    {
+        // Pick one mixed-loot category and spawn it with the normal box spill impulse.
+        Vector3 position = ResolveBoxLootLaunchPosition(dropCenter);
+        Vector3 velocity = ResolveBoxLootLaunchVelocity(index, count);
+        int category = Random.Range(0, 3);
+        if (category == 1)
+        {
+            EquipmentDefinition equipment = EquipmentCatalog.GetRandom();
+            if (equipment != null)
+            {
+                ActivateEquipmentPickup(
+                    GetNextLootPickupSlotId(),
+                    equipment,
+                    position,
+                    healthPercent: 1f,
+                    respawnOnDespawn: false,
+                    initialVelocity: velocity);
+                return true;
+            }
+        }
+
+        if (category == 2)
+        {
+            ActivateFunctionalPickup(
+                GetNextLootPickupSlotId(),
+                GetRandomFunctionalPickupType(),
+                position,
+                respawnOnCollect: false,
+                initialVelocity: velocity);
+            return true;
+        }
+
+        ActivateStatPickup(
+            GetNextLootPickupSlotId(),
+            GetRandomStatType(),
+            position,
+            respawnOnCollect: false,
+            initialVelocity: velocity);
+        return true;
+    }
+
+    private int ResolveBoxLootCount(BoxSlot slot)
+    {
+        // Preserve the box variant's intended loot count when sudden events override the loot category.
+        if (slot == null)
+        {
+            return Mathf.Clamp(basicBoxLootCount, 0, 3);
+        }
+
+        int statCount = slot.LootStats != null ? slot.LootStats.Length : 0;
+        int functionalCount = slot.LootFunctionalTypes != null ? slot.LootFunctionalTypes.Length : 0;
+        int equipmentCount = slot.LootEquipmentIds != null ? slot.LootEquipmentIds.Length : 0;
+        int resolvedCount = Mathf.Max(statCount, functionalCount, equipmentCount);
+        return resolvedCount > 0 ? resolvedCount : Mathf.Clamp(basicBoxLootCount, 0, 3);
+    }
+
+    private BoxVariantDefinition ChooseRandomBoxVariant()
+    {
+        // Choose a box variant by inspector-configured spawn weight, falling back to the basic stat box.
+        if (boxVariants == null || boxVariants.Length == 0)
+        {
+            return CreateFallbackBoxVariant();
+        }
+
+        float totalWeight = 0f;
+        for (int i = 0; i < boxVariants.Length; i++)
+        {
+            BoxVariantDefinition variant = boxVariants[i];
+            if (IsUsableBoxVariant(variant))
+            {
+                totalWeight += Mathf.Max(0f, variant.SpawnWeight);
+            }
+        }
+
+        if (totalWeight <= 0f)
+        {
+            return CreateFallbackBoxVariant();
+        }
+
+        float roll = Random.Range(0f, totalWeight);
+        for (int i = 0; i < boxVariants.Length; i++)
+        {
+            BoxVariantDefinition variant = boxVariants[i];
+            if (!IsUsableBoxVariant(variant))
+            {
+                continue;
+            }
+
+            roll -= Mathf.Max(0f, variant.SpawnWeight);
+            if (roll <= 0f)
+            {
+                return variant;
+            }
+        }
+
+        return CreateFallbackBoxVariant();
+    }
+
+    private BoxVariantDefinition ResolveBoxVariant(BoxVariantDefinition variant)
+    {
+        // Return a usable variant object so box activation always has valid health, loot, and tint data.
+        return IsUsableBoxVariant(variant) ? variant : CreateFallbackBoxVariant();
+    }
+
+    private BoxVariantDefinition ResolveBoxVariant(string boxId)
+    {
+        // Resolve a variant by id on clients so tint stays deterministic from server-synced box state.
+        if (!string.IsNullOrWhiteSpace(boxId) && boxVariants != null)
+        {
+            for (int i = 0; i < boxVariants.Length; i++)
+            {
+                BoxVariantDefinition variant = boxVariants[i];
+                if (variant != null && variant.BoxId == boxId)
+                {
+                    return ResolveBoxVariant(variant);
+                }
+            }
+        }
+
+        return CreateFallbackBoxVariant();
+    }
+
+    private bool IsUsableBoxVariant(BoxVariantDefinition variant)
+    {
+        // Accept only variants that have a stable id and a positive chance to spawn.
+        return variant != null &&
+            !string.IsNullOrWhiteSpace(variant.BoxId) &&
+            variant.SpawnWeight > 0f;
+    }
+
+    private BoxVariantDefinition CreateFallbackBoxVariant()
+    {
+        // Preserve the original basic stat box behavior if the editable variant list is empty or invalid.
+        return new BoxVariantDefinition
+        {
+            BoxId = "basic_stat_box",
+            DisplayName = "Basic Stat Box",
+            LootKind = BoxLootKind.Stat,
+            LootCount = Mathf.Clamp(basicBoxLootCount, 0, 3),
+            MaxHealth = Mathf.Max(1f, basicBoxMaxHealth),
+            SpawnWeight = 1f,
+            TintColor = Color.white
+        };
+    }
+
+    private void PreRollBoxLoot(BoxSlot slot, BoxVariantDefinition variant)
+    {
+        // Pre-roll all loot data at spawn time so destroyed boxes already know what they will drop.
+        int lootCount = Mathf.Max(0, variant.LootCount);
+        slot.LootStats = System.Array.Empty<PlayerStatType>();
+        slot.LootFunctionalTypes = System.Array.Empty<FunctionalPickupType>();
+        slot.LootEquipmentIds = System.Array.Empty<string>();
+
+        switch (variant.LootKind)
+        {
+            case BoxLootKind.Functional:
+                slot.LootFunctionalTypes = GenerateFunctionalLoot(lootCount);
+                break;
+            case BoxLootKind.Equipment:
+                slot.LootEquipmentIds = GenerateEquipmentLoot(lootCount);
+                break;
+            default:
+                slot.LootStats = GenerateStatLoot(lootCount);
+                break;
+        }
     }
 
     private PlayerStatType[] GenerateStatLoot(int lootCount)
@@ -1458,6 +2320,36 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         return lootStats;
+    }
+
+    private FunctionalPickupType[] GenerateFunctionalLoot(int lootCount)
+    {
+        // Pre-roll functional pickups such as the current basic heal item.
+        int resolvedCount = Mathf.Max(0, lootCount);
+        FunctionalPickupType[] lootTypes = new FunctionalPickupType[resolvedCount];
+        for (int i = 0; i < resolvedCount; i++)
+        {
+            lootTypes[i] = GetRandomFunctionalPickupType();
+        }
+
+        return lootTypes;
+    }
+
+    private string[] GenerateEquipmentLoot(int lootCount)
+    {
+        // Pre-roll equipment ids from the Resources equipment catalog for equipment box drops.
+        int resolvedCount = Mathf.Max(0, lootCount);
+        List<string> equipmentIds = new(resolvedCount);
+        for (int i = 0; i < resolvedCount; i++)
+        {
+            EquipmentDefinition equipment = EquipmentCatalog.GetRandom();
+            if (equipment != null && !string.IsNullOrWhiteSpace(equipment.EquipmentId))
+            {
+                equipmentIds.Add(equipment.EquipmentId);
+            }
+        }
+
+        return equipmentIds.ToArray();
     }
 
     private Vector3 ResolveBoxLootLaunchPosition(Vector3 center)
@@ -2024,7 +2916,7 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             BoxSlot slot = pair.Value;
             float healthPercent = slot.MaxHealth > 0f ? Mathf.Clamp01(slot.CurrentHealth / slot.MaxHealth) : 0f;
-            SetBoxVisualClientRpc(pair.Key, slot.Active, slot.Position, healthPercent);
+            SetBoxVisualClientRpc(pair.Key, slot.Active, slot.Position, healthPercent, new FixedString64Bytes(slot.BoxId ?? string.Empty));
         }
     }
 
@@ -2076,6 +2968,12 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         slot.Visual.transform.position = position;
+        if (kind == PickupKind.Stat && ApplyStatPickupVisualTexture(slot.Visual, statType))
+        {
+            UpdateEquipmentLowHealthSpark(slot);
+            return;
+        }
+
         Renderer renderer = slot.Visual.GetComponent<Renderer>();
         if (renderer != null)
         {
@@ -2095,11 +2993,12 @@ public class GameplayPickupManager : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void SetBoxVisualClientRpc(int slotId, bool active, Vector3 position, float healthPercent)
+    private void SetBoxVisualClientRpc(int slotId, bool active, Vector3 position, float healthPercent, FixedString64Bytes boxId)
     {
         // Sync a destructible box visual from the server-managed box slot state.
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.Active = active;
+        slot.BoxId = boxId.ToString();
         slot.Position = position;
 
         EnsureBoxVisual(slotId, slot);
@@ -2116,7 +3015,7 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         slot.Visual.transform.position = position;
-        ApplyBoxVisualHealthColor(slot.Visual, healthPercent);
+        ApplyBoxVisualHealthTexture(slot.Visual, healthPercent, slot.BoxId);
     }
 
     [ClientRpc]
@@ -2140,6 +3039,13 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Spawn stat/heal pickup feedback on every client from the server-approved pickup result.
         PlayPickupOneShotEffect(ResolvePickupEffectPrefab(effectKind), position, effectKind.ToString());
+    }
+
+    [ClientRpc]
+    private void PlayBoxHitEffectClientRpc(Vector3 position)
+    {
+        // Spawn the stone hit VFX on every client when a server-approved attack damages a box.
+        PlayBoxHitOneShotEffect(ResolveBoxHitEffectPrefab(), position);
     }
 
     private void PlayPickupOneShotEffect(GameObject effectPrefab, Vector3 position, string effectName)
@@ -2174,12 +3080,46 @@ public class GameplayPickupManager : NetworkBehaviour
         Destroy(effectObject, Mathf.Max(0.1f, pickupEffectLifetime));
     }
 
+    private void PlayBoxHitOneShotEffect(GameObject effectPrefab, Vector3 position)
+    {
+        // Instantiate the box hit effect, force all child particles to play once, and clean it up.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(boxHitEffectEulerOffset));
+        effectObject.name = "BoxStoneHitEffect";
+        effectObject.transform.localScale *= Mathf.Max(0.01f, boxHitEffectScale);
+        effectObject.SetActive(true);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, boxHitEffectLifetime));
+    }
+
     private GameObject ResolvePickupEffectPrefab(PickupEffectKind effectKind)
     {
         // Select the correct pickup VFX prefab while keeping each subtype independently replaceable.
         return effectKind switch
         {
             PickupEffectKind.Healing => ResolveHealingPickupEffectPrefab(),
+            PickupEffectKind.AttackUp => ResolveAttackUpEffectPrefab(),
+            PickupEffectKind.DefenceUp => ResolveDefenceUpEffectPrefab(),
             _ => ResolveStatBuffEffectPrefab()
         };
     }
@@ -2216,6 +3156,57 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         return resolvedDefaultHealingPickupEffectPrefab;
+    }
+
+    private GameObject ResolveAttackUpEffectPrefab()
+    {
+        // Use the inspector-assigned attack buff VFX first, then fall back to CustomEffects/AttackUp.
+        if (attackUpEffectPrefab != null)
+        {
+            return attackUpEffectPrefab;
+        }
+
+        if (!triedLoadDefaultAttackUpEffectPrefab)
+        {
+            triedLoadDefaultAttackUpEffectPrefab = true;
+            resolvedDefaultAttackUpEffectPrefab = Resources.Load<GameObject>(DefaultAttackUpEffectResourcePath);
+        }
+
+        return resolvedDefaultAttackUpEffectPrefab;
+    }
+
+    private GameObject ResolveDefenceUpEffectPrefab()
+    {
+        // Use the inspector-assigned defense buff VFX first, then fall back to CustomEffects/DefenceUp.
+        if (defenceUpEffectPrefab != null)
+        {
+            return defenceUpEffectPrefab;
+        }
+
+        if (!triedLoadDefaultDefenceUpEffectPrefab)
+        {
+            triedLoadDefaultDefenceUpEffectPrefab = true;
+            resolvedDefaultDefenceUpEffectPrefab = Resources.Load<GameObject>(DefaultDefenceUpEffectResourcePath);
+        }
+
+        return resolvedDefaultDefenceUpEffectPrefab;
+    }
+
+    private GameObject ResolveBoxHitEffectPrefab()
+    {
+        // Use the inspector-assigned box hit VFX first, then fall back to the shared stone hit prefab.
+        if (boxHitEffectPrefab != null)
+        {
+            return boxHitEffectPrefab;
+        }
+
+        if (!triedLoadDefaultBoxHitEffectPrefab)
+        {
+            triedLoadDefaultBoxHitEffectPrefab = true;
+            resolvedDefaultBoxHitEffectPrefab = Resources.Load<GameObject>(DefaultBoxHitEffectResourcePath);
+        }
+
+        return resolvedDefaultBoxHitEffectPrefab;
     }
 
     private void CreateLocalVisualSlots()
@@ -2270,6 +3261,7 @@ public class GameplayPickupManager : NetworkBehaviour
         // Keep temporary visuals keyed by subtype so future functional items can swap visuals cleanly.
         return slot.Kind switch
         {
+            PickupKind.Stat => slot.StatType.ToString(),
             PickupKind.Equipment => slot.EquipmentId ?? string.Empty,
             PickupKind.Functional => slot.FunctionalType.ToString(),
             _ => string.Empty
@@ -2279,6 +3271,11 @@ public class GameplayPickupManager : NetworkBehaviour
     private GameObject CreatePickupVisual(PickupSlot slot)
     {
         // Instantiate a real equipment prefab when assigned, otherwise create a clear temporary primitive.
+        if (slot.Kind == PickupKind.Stat)
+        {
+            return CreateStatPickupVisual(slot.StatType);
+        }
+
         if (slot.Kind == PickupKind.Equipment)
         {
             EquipmentDefinition equipment = EquipmentCatalog.Get(slot.EquipmentId);
@@ -2306,6 +3303,260 @@ public class GameplayPickupManager : NetworkBehaviour
         };
 
         return visual;
+    }
+
+    private GameObject CreateStatPickupVisual(PlayerStatType statType)
+    {
+        // Instantiate the shared stat item model and swap only its Image material texture by stat type.
+        GameObject prefab = ResolveStatPickupVisualPrefab();
+        GameObject visual = new("StatPickupVisualRoot");
+        GameObject model = prefab != null ? Instantiate(prefab, visual.transform) : GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        model.name = "StatPickupModel";
+        model.transform.SetParent(visual.transform, false);
+
+        ApplyStatPickupVisualTexture(visual, statType);
+        NormalizeStatPickupVisualBounds(visual, model.transform);
+        return visual;
+    }
+
+    private GameObject ResolveStatPickupVisualPrefab()
+    {
+        // Load the shared stat item FBX from Resources once so every stat can reuse the same model.
+        if (triedLoadStatPickupVisualPrefab)
+        {
+            return resolvedStatPickupVisualPrefab;
+        }
+
+        triedLoadStatPickupVisualPrefab = true;
+        resolvedStatPickupVisualPrefab = Resources.Load<GameObject>(statPickupVisualResourcePath);
+        if (resolvedStatPickupVisualPrefab == null)
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Stat pickup visual prefab not found path={statPickupVisualResourcePath}");
+        }
+
+        return resolvedStatPickupVisualPrefab;
+    }
+
+    private bool ApplyStatPickupVisualTexture(GameObject visual, PlayerStatType statType)
+    {
+        // Apply the stat-specific icon texture to the FBX material named Image.
+        if (visual == null)
+        {
+            return false;
+        }
+
+        Texture2D texture = ResolveStatPickupTexture(statType);
+        if (texture == null)
+        {
+            return false;
+        }
+
+        bool applied = false;
+        Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(includeInactive: true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            applied |= ApplyStatTextureToRendererMaterials(renderers[i], texture);
+        }
+
+        if (!applied && !warnedMissingStatPickupMaterial)
+        {
+            warnedMissingStatPickupMaterial = true;
+            Debug.LogWarning($"[GameplayPickupManager] Stat pickup material '{statPickupTextureMaterialName}' was not found under {statPickupVisualResourcePath}.");
+        }
+
+        return applied;
+    }
+
+    private Texture2D ResolveStatPickupTexture(PlayerStatType statType)
+    {
+        // Resolve and cache the texture that represents one PlayerStatType.
+        if (resolvedStatPickupTextures.TryGetValue(statType, out Texture2D texture))
+        {
+            return texture;
+        }
+
+        if (triedLoadStatPickupTextures.Contains(statType))
+        {
+            return null;
+        }
+
+        triedLoadStatPickupTextures.Add(statType);
+        string texturePath = $"{statPickupTextureResourceRoot}/{GetStatPickupTextureName(statType)}";
+        texture = Resources.Load<Texture2D>(texturePath);
+        if (texture == null)
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Stat pickup texture not found stat={statType} path={texturePath}");
+            return null;
+        }
+
+        resolvedStatPickupTextures[statType] = texture;
+        return texture;
+    }
+
+    private static string GetStatPickupTextureName(PlayerStatType statType)
+    {
+        // Map stat types to the texture file names provided under Resources/fbx/Stat_Item.
+        return statType switch
+        {
+            PlayerStatType.AttackPower => "atk",
+            PlayerStatType.Defense => "def",
+            PlayerStatType.Health => "hp",
+            PlayerStatType.JumpForce => "jmp",
+            PlayerStatType.FireRate => "rof",
+            PlayerStatType.MoveSpeed => "spd",
+            PlayerStatType.Weight => "wgt",
+            _ => "atk"
+        };
+    }
+
+    private bool ApplyStatTextureToRendererMaterials(Renderer renderer, Texture texture)
+    {
+        // Swap only the configured material slot so the rest of the FBX material setup stays intact.
+        if (renderer == null || texture == null)
+        {
+            return false;
+        }
+
+        bool applied = false;
+        Material[] materials = renderer.materials;
+        for (int i = 0; i < materials.Length; i++)
+        {
+            Material material = materials[i];
+            if (material == null || !ShouldApplyStatTextureMaterial(material))
+            {
+                continue;
+            }
+
+            ApplyStatTextureToMaterial(material, texture);
+            applied = true;
+        }
+
+        return applied;
+    }
+
+    private bool ShouldApplyStatTextureMaterial(Material material)
+    {
+        // Match the FBX's Image material, or all materials if the filter is intentionally left blank.
+        if (material == null)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(statPickupTextureMaterialName))
+        {
+            return true;
+        }
+
+        return material.name.IndexOf(statPickupTextureMaterialName, System.StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private void NormalizeStatPickupVisualBounds(GameObject visual, Transform modelRoot)
+    {
+        // Normalize FBX size and pivot so the pickup is visible at the same world position as old primitives.
+        if (visual == null || modelRoot == null)
+        {
+            return;
+        }
+
+        if (!normalizeStatPickupVisualBounds)
+        {
+            modelRoot.localScale = Vector3.Scale(modelRoot.localScale, statPickupVisualScale);
+            return;
+        }
+
+        if (!TryGetRendererBounds(visual, out Bounds bounds) || bounds.size.y <= 0.0001f)
+        {
+            modelRoot.localScale = Vector3.Scale(modelRoot.localScale, statPickupVisualScale);
+            return;
+        }
+
+        float targetHeight = Mathf.Max(0.01f, statPickupVisualTargetHeight);
+        float scaleFactor = targetHeight / Mathf.Max(0.0001f, bounds.size.y);
+        modelRoot.localScale = Vector3.Scale(modelRoot.localScale * scaleFactor, statPickupVisualScale);
+
+        if (!TryGetRendererBounds(visual, out bounds))
+        {
+            return;
+        }
+
+        Vector3 localOffset = new(
+            -bounds.center.x,
+            -Mathf.Max(0f, pickupRestHeight) - bounds.min.y,
+            -bounds.center.z);
+        modelRoot.localPosition += localOffset;
+    }
+
+    private static bool TryGetRendererBounds(GameObject visual, out Bounds bounds)
+    {
+        // Calculate combined renderer bounds for imported models that keep meshes under child objects.
+        bounds = default;
+        if (visual == null)
+        {
+            return false;
+        }
+
+        Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(includeInactive: true);
+        bool hasBounds = false;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null)
+            {
+                continue;
+            }
+
+            if (!hasBounds)
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+        }
+
+        return hasBounds;
+    }
+
+    private void ApplyStatTextureToMaterial(Material material, Texture texture)
+    {
+        // Set base and optional emission texture properties while keeping the material color neutral.
+        if (material.HasProperty("_BaseMap"))
+        {
+            material.SetTexture("_BaseMap", texture);
+        }
+
+        if (material.HasProperty("_MainTex"))
+        {
+            material.SetTexture("_MainTex", texture);
+        }
+
+        if (material.HasProperty("_BaseColor"))
+        {
+            material.SetColor("_BaseColor", Color.white);
+        }
+        else if (material.HasProperty("_Color"))
+        {
+            material.SetColor("_Color", Color.white);
+        }
+
+        if (!statPickupTextureAlsoEmission)
+        {
+            return;
+        }
+
+        if (material.HasProperty("_EmissionMap"))
+        {
+            material.SetTexture("_EmissionMap", texture);
+        }
+
+        if (material.HasProperty("_EmissionColor"))
+        {
+            material.SetColor("_EmissionColor", statPickupEmissionColor);
+        }
+
+        material.EnableKeyword("_EMISSION");
     }
 
     private void EnsureBoxVisual(int slotId, BoxSlot slot)
@@ -2575,16 +3826,135 @@ public class GameplayPickupManager : NetworkBehaviour
         }
     }
 
-    private static void ApplyBoxVisualHealthColor(GameObject visual, float healthPercent)
+    private void ApplyBoxVisualHealthTexture(GameObject visual, float healthPercent, string boxId)
     {
-        // Tint the temporary box visual slightly toward red as it takes damage.
-        Color color = Color.Lerp(new Color(1f, 0.35f, 0.25f), Color.white, Mathf.Clamp01(healthPercent));
+        // Swap the box surface texture by health and tint it according to the box variant.
+        if (visual == null)
+        {
+            return;
+        }
+
+        Color tintColor = ResolveBoxVariant(boxId).TintColor;
+        Texture2D texture = ResolveBasicBoxTextureForHealth(healthPercent);
+        if (texture == null)
+        {
+            ApplyBoxVisualFallbackColor(visual, healthPercent, tintColor);
+            return;
+        }
+
+        Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(includeInactive: true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            ApplyTextureToRendererMaterials(renderers[i], texture, tintColor);
+        }
+    }
+
+    private Texture2D ResolveBasicBoxTextureForHealth(float healthPercent)
+    {
+        // Choose a box damage texture using the configured health thresholds.
+        EnsureBasicBoxTexturesLoaded();
+        float clampedHealthPercent = Mathf.Clamp01(healthPercent);
+        float fullBreakThreshold = Mathf.Clamp01(basicBoxFullBreakThreshold);
+        float halfBreakThreshold = Mathf.Clamp01(Mathf.Max(basicBoxHalfBreakThreshold, fullBreakThreshold));
+
+        if (clampedHealthPercent <= fullBreakThreshold)
+        {
+            return resolvedBasicBoxFullBreakTexture != null ? resolvedBasicBoxFullBreakTexture : resolvedBasicBoxHalfBreakTexture;
+        }
+
+        if (clampedHealthPercent <= halfBreakThreshold)
+        {
+            return resolvedBasicBoxHalfBreakTexture != null ? resolvedBasicBoxHalfBreakTexture : resolvedBasicBoxCleanTexture;
+        }
+
+        return resolvedBasicBoxCleanTexture;
+    }
+
+    private void EnsureBasicBoxTexturesLoaded()
+    {
+        // Load the three basic box state textures from Resources once per manager instance.
+        if (triedLoadBasicBoxTextures)
+        {
+            return;
+        }
+
+        triedLoadBasicBoxTextures = true;
+        resolvedBasicBoxCleanTexture = Resources.Load<Texture2D>(basicBoxCleanTextureResourcePath);
+        resolvedBasicBoxHalfBreakTexture = Resources.Load<Texture2D>(basicBoxHalfBreakTextureResourcePath);
+        resolvedBasicBoxFullBreakTexture = Resources.Load<Texture2D>(basicBoxFullBreakTextureResourcePath);
+
+        if (resolvedBasicBoxCleanTexture == null ||
+            resolvedBasicBoxHalfBreakTexture == null ||
+            resolvedBasicBoxFullBreakTexture == null)
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Basic box texture load incomplete clean={resolvedBasicBoxCleanTexture != null} half={resolvedBasicBoxHalfBreakTexture != null} full={resolvedBasicBoxFullBreakTexture != null}");
+        }
+    }
+
+    private void ApplyTextureToRendererMaterials(Renderer renderer, Texture texture, Color tintColor)
+    {
+        // Apply one texture and variant tint to every editable material slot on a renderer.
+        if (renderer == null || texture == null)
+        {
+            return;
+        }
+
+        Material[] materials = renderer.materials;
+        for (int i = 0; i < materials.Length; i++)
+        {
+            Material material = materials[i];
+            if (material == null)
+            {
+                continue;
+            }
+
+            if (ShouldPreserveBoxMaterial(material))
+            {
+                continue;
+            }
+
+            if (material.HasProperty("_BaseMap"))
+            {
+                material.SetTexture("_BaseMap", texture);
+            }
+
+            if (material.HasProperty("_MainTex"))
+            {
+                material.SetTexture("_MainTex", texture);
+            }
+
+            if (material.HasProperty("_BaseColor"))
+            {
+                material.SetColor("_BaseColor", tintColor);
+            }
+            else if (material.HasProperty("_Color"))
+            {
+                material.SetColor("_Color", tintColor);
+            }
+        }
+    }
+
+    private void ApplyBoxVisualFallbackColor(GameObject visual, float healthPercent, Color tintColor)
+    {
+        // Keep a visible damage cue if the configured box textures are missing.
+        if (visual == null)
+        {
+            return;
+        }
+
+        Color damageColor = Color.Lerp(new Color(1f, 0.35f, 0.25f), Color.white, Mathf.Clamp01(healthPercent));
+        Color color = new(damageColor.r * tintColor.r, damageColor.g * tintColor.g, damageColor.b * tintColor.b, tintColor.a);
         Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(includeInactive: true);
         for (int i = 0; i < renderers.Length; i++)
         {
             if (renderers[i] != null)
             {
                 Material material = renderers[i].material;
+                if (ShouldPreserveBoxMaterial(material))
+                {
+                    continue;
+                }
+
                 if (material.HasProperty("_BaseColor"))
                 {
                     material.SetColor("_BaseColor", color);
@@ -2595,6 +3965,14 @@ public class GameplayPickupManager : NetworkBehaviour
                 }
             }
         }
+    }
+
+    private bool ShouldPreserveBoxMaterial(Material material)
+    {
+        // Keep model-specific materials such as Rock_Eye untouched by box damage texture swaps.
+        return material != null &&
+            !string.IsNullOrWhiteSpace(basicBoxTextureExcludedMaterialName) &&
+            material.name.Contains(basicBoxTextureExcludedMaterialName);
     }
 
     private PickupSlot GetOrCreateSlot(int slotId)
@@ -2623,13 +4001,28 @@ public class GameplayPickupManager : NetworkBehaviour
 
         slot = new BoxSlot
         {
-            BoxId = "basic_box",
+            BoxId = "basic_stat_box",
+            LootKind = BoxLootKind.Stat,
             MaxHealth = Mathf.Max(1f, basicBoxMaxHealth),
             CurrentHealth = Mathf.Max(1f, basicBoxMaxHealth),
-            LootStats = System.Array.Empty<PlayerStatType>()
+            LootStats = System.Array.Empty<PlayerStatType>(),
+            LootFunctionalTypes = System.Array.Empty<FunctionalPickupType>(),
+            LootEquipmentIds = System.Array.Empty<string>()
         };
         boxSlots.Add(slotId, slot);
         return slot;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        // Validate networked vector values before using them as effect spawn points.
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        // Reject NaN and infinity values that can break transforms or particle spawning.
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
     private Vector3 GetRandomSpawnPosition()
@@ -2654,9 +4047,23 @@ public class GameplayPickupManager : NetworkBehaviour
         return functionalPickupChance > 0f && Random.value < Mathf.Clamp01(functionalPickupChance);
     }
 
-    private static FunctionalPickupType GetRandomFunctionalPickupType()
+    private FunctionalPickupType GetRandomFunctionalPickupType()
     {
-        // Return the only functional pickup for now; this becomes the expansion point for weighted utility items.
+        // Choose from the editable functional pickup pool, ignoring None entries.
+        if (functionalPickupPool == null || functionalPickupPool.Length == 0)
+        {
+            return FunctionalPickupType.BasicHeal;
+        }
+
+        for (int attempts = 0; attempts < functionalPickupPool.Length; attempts++)
+        {
+            FunctionalPickupType candidate = functionalPickupPool[Random.Range(0, functionalPickupPool.Length)];
+            if (candidate != FunctionalPickupType.None)
+            {
+                return candidate;
+            }
+        }
+
         return FunctionalPickupType.BasicHeal;
     }
 
@@ -2675,6 +4082,16 @@ public class GameplayPickupManager : NetworkBehaviour
                 return new Color(0.25f, 1f, 0.55f);
             }
 
+            if (equipmentId == "balanced_hitscan")
+            {
+                return new Color(0.25f, 0.85f, 1f);
+            }
+
+            if (equipmentId == "balanced_canon")
+            {
+                return new Color(1f, 0.55f, 0.1f);
+            }
+
             return new Color(0.95f, 0.95f, 1f);
         }
 
@@ -2683,6 +4100,10 @@ public class GameplayPickupManager : NetworkBehaviour
             return functionalType switch
             {
                 FunctionalPickupType.BasicHeal => new Color(1f, 0.15f, 0.4f),
+                FunctionalPickupType.AttackPowerBuff => new Color(1f, 0.55f, 0.05f),
+                FunctionalPickupType.DamageReductionBuff => new Color(0.2f, 0.45f, 1f),
+                FunctionalPickupType.MoveSpeedBuff => new Color(0.1f, 1f, 0.55f),
+                FunctionalPickupType.AutoFireBuff => new Color(1f, 0.95f, 0.1f),
                 _ => Color.white
             };
         }

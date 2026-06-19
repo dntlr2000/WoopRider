@@ -16,6 +16,10 @@ public class MatchStateController : NetworkBehaviour
     [SerializeField] private float finalTransitionDuration = 8f;
     [SerializeField] private float finalMatchDuration = 120f;
 
+    [Header("Room Control")]
+    [SerializeField] private float kickDisconnectNoticeDelay = 0.35f;
+    [SerializeField] private bool allowKickOnlyInLobby = true;
+
     public NetworkVariable<NetworkMatchState> State = new(
         NetworkMatchState.Lobby,
         NetworkVariableReadPermission.Everyone,
@@ -33,6 +37,7 @@ public class MatchStateController : NetworkBehaviour
 
     // 중도 이탈로 패배 처리된 플레이어 목록.
     private readonly Dictionary<ulong, bool> defeatedByDisconnect = new();
+    private readonly HashSet<ulong> pendingKickDisconnects = new();
     private int lastLoggedRemainingSecond = -1;
     private bool isDisbandingRoom;
 
@@ -205,6 +210,31 @@ public class MatchStateController : NetworkBehaviour
         RequestDisbandRoomServerRpc();
     }
 
+    public void RequestKickClient(ulong targetClientId)
+    {
+        // UI room list entry point: ask the server to disconnect one room client after authority checks.
+        if (!CanRequestRoomControl("KickClient"))
+        {
+            return;
+        }
+
+        if (IsServer)
+        {
+            if (NetworkManager.Singleton.IsClient && !CanLocalRoomControl("KickClient"))
+            {
+                return;
+            }
+
+            ulong requesterClientId = NetworkManager.Singleton.IsClient
+                ? NetworkManager.Singleton.LocalClientId
+                : RoomHostAuthority.NoHostClientId;
+            KickClientByHost(targetClientId, requesterClientId);
+            return;
+        }
+
+        RequestKickClientServerRpc(targetClientId);
+    }
+
     public void MarkAsDefeated(ulong clientId)
     {
         // 중도 이탈자를 패배 처리 대상으로 기록.
@@ -372,6 +402,7 @@ public class MatchStateController : NetworkBehaviour
     {
         // 새 경기 시작 전에 이전 판의 승자/이탈자/타이머 로그 상태를 초기화.
         defeatedByDisconnect.Clear();
+        pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
         lastLoggedRemainingSecond = -1;
     }
@@ -380,6 +411,7 @@ public class MatchStateController : NetworkBehaviour
     {
         // 로비 복귀/룸 해산처럼 대기 상태로 돌아갈 때 경기 진행 정보를 초기화.
         defeatedByDisconnect.Clear();
+        pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
         RemainingTime.Value = 0f;
         lastLoggedRemainingSecond = -1;
@@ -486,12 +518,141 @@ public class MatchStateController : NetworkBehaviour
         DisbandRoomByHost();
     }
 
+    [ServerRpc(RequireOwnership = false)]
+    private void RequestKickClientServerRpc(ulong targetClientId, ServerRpcParams rpcParams = default)
+    {
+        // Verify the requesting client is the current room host before disconnecting another client.
+        if (!CanSenderControlRoom(rpcParams.Receive.SenderClientId, "KickClient"))
+        {
+            return;
+        }
+
+        KickClientByHost(targetClientId, rpcParams.Receive.SenderClientId);
+    }
+
+    private void KickClientByHost(ulong targetClientId, ulong requesterClientId)
+    {
+        // Server-authoritatively notify and disconnect a requested room member.
+        if (!IsServer || NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        if (!CanKickClient(targetClientId, requesterClientId, out string rejectReason))
+        {
+            Debug.Log($"[MatchStateController] Kick rejected requester={requesterClientId} target={targetClientId} reason='{rejectReason}'");
+            ShowKickRejectNotice(requesterClientId, rejectReason);
+            return;
+        }
+
+        pendingKickDisconnects.Add(targetClientId);
+        RoomPolicy.Instance?.RegisterKickedClient(targetClientId);
+        string targetLabel = FormatRoomClientLabel(targetClientId);
+        ShowNoticeToClient(targetClientId, "\uBC29\uC7A5\uC5D0 \uC758\uD574 \uBC29\uC5D0\uC11C \uD1F4\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.", 2f);
+        ShowKickRequesterNotice(requesterClientId, $"{targetLabel}\uB97C \uBC29\uC5D0\uC11C \uB0B4\uBCF4\uB0C8\uC2B5\uB2C8\uB2E4.");
+        /*
+        ShowNoticeToClient(targetClientId, "방장에 의해 방에서 퇴장되었습니다.", 2f);
+        ShowKickRequesterNotice(requesterClientId, $"{targetLabel}를 방에서 내보냈습니다.");
+        */
+        StartCoroutine(DisconnectKickedClientAfterDelay(targetClientId));
+        Debug.Log($"[MatchStateController] Kick approved requester={requesterClientId} target={targetClientId}");
+    }
+
+    private bool CanKickClient(ulong targetClientId, ulong requesterClientId, out string rejectReason)
+    {
+        // Validate the target exists and that the host is not trying to kick themselves.
+        if (allowKickOnlyInLobby && State.Value != NetworkMatchState.Lobby)
+        {
+            rejectReason = "Players can only be kicked while the room is in lobby.";
+            return false;
+        }
+
+        if (!NetworkManager.Singleton.ConnectedClients.ContainsKey(targetClientId))
+        {
+            rejectReason = "\uB300\uC0C1 \uD50C\uB808\uC774\uC5B4\uAC00 \uC774\uBBF8 \uBC29\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4.";
+            /*
+            rejectReason = "대상 플레이어가 이미 방에 없습니다.";
+            */
+            return false;
+        }
+
+        if (requesterClientId != RoomHostAuthority.NoHostClientId && targetClientId == requesterClientId)
+        {
+            rejectReason = "자기 자신은 강퇴할 수 없습니다.";
+            rejectReason = "\uC790\uAE30 \uC790\uC2E0\uC740 \uAC15\uD1F4\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.";
+            return false;
+        }
+
+        if (pendingKickDisconnects.Contains(targetClientId))
+        {
+            rejectReason = "이미 강퇴 처리 중인 플레이어입니다.";
+            rejectReason = "\uC774\uBBF8 \uAC15\uD1F4 \uCC98\uB9AC \uC911\uC778 \uD50C\uB808\uC774\uC5B4\uC785\uB2C8\uB2E4.";
+            return false;
+        }
+
+        rejectReason = string.Empty;
+        return true;
+    }
+
+    private IEnumerator DisconnectKickedClientAfterDelay(ulong targetClientId)
+    {
+        // Give the target client a brief moment to receive the notice before closing the connection.
+        yield return new WaitForSeconds(Mathf.Max(0f, kickDisconnectNoticeDelay));
+
+        pendingKickDisconnects.Remove(targetClientId);
+        if (!IsServer || NetworkManager.Singleton == null)
+        {
+            yield break;
+        }
+
+        if (!NetworkManager.Singleton.ConnectedClients.ContainsKey(targetClientId))
+        {
+            yield break;
+        }
+
+        NetworkManager.Singleton.DisconnectClient(targetClientId);
+        Debug.Log($"[MatchStateController] Kicked client disconnected clientId={targetClientId}");
+    }
+
+    private void ShowKickRejectNotice(ulong requesterClientId, string message)
+    {
+        // Send kick failure feedback only when the requester is an actual connected client.
+        if (requesterClientId == RoomHostAuthority.NoHostClientId)
+        {
+            return;
+        }
+
+        ShowNoticeToClient(requesterClientId, message, 3f);
+    }
+
+    private void ShowKickRequesterNotice(ulong requesterClientId, string message)
+    {
+        // Confirm a successful kick to the room host while supporting dedicated-server console calls.
+        if (requesterClientId == RoomHostAuthority.NoHostClientId)
+        {
+            return;
+        }
+
+        ShowNoticeToClient(requesterClientId, message, 3f);
+    }
+
     private bool CanSenderControlRoom(ulong senderClientId, string actionName)
     {
         // ServerRpc 요청자가 현재 룸 방장 권한을 가진 클라이언트인지 확인.
         RoomHostAuthority roomHostAuthority = RoomHostAuthority.Instance;
         bool allowed = roomHostAuthority != null && roomHostAuthority.CanClientControl(senderClientId);
         Debug.Log($"[MatchStateController] Control request action={actionName} sender={senderClientId} allowed={allowed}");
+        return allowed;
+    }
+
+    private bool CanLocalRoomControl(string actionName)
+    {
+        // Validate direct local-server button calls with the same room host authority used by RPC requests.
+        RoomHostAuthority roomHostAuthority = RoomHostAuthority.Instance;
+        bool allowed = roomHostAuthority != null &&
+            roomHostAuthority.IsSpawned &&
+            roomHostAuthority.IsLocalRoomHost();
+        Debug.Log($"[MatchStateController] Local control request action={actionName} allowed={allowed}");
         return allowed;
     }
 
@@ -549,5 +710,14 @@ public class MatchStateController : NetworkBehaviour
     {
         // Convert a notice string to an RPC-safe fixed string payload.
         return new FixedString512Bytes(message ?? string.Empty);
+    }
+
+    private static string FormatRoomClientLabel(ulong clientId)
+    {
+        // Prefer the replicated room player label and fall back to a temporary client id label.
+        RoomPlayerRegistry registry = RoomPlayerRegistry.Instance;
+        return registry != null && registry.IsSpawned
+            ? registry.GetPlayerLabel(clientId)
+            : $"플레이어 {clientId}";
     }
 }

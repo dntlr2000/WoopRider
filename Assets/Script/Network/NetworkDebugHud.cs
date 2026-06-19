@@ -8,7 +8,7 @@ public class NetworkDebugHud : MonoBehaviour
     [SerializeField] private bool showHud = true;
 
     [Header("Layout")]
-    [SerializeField] private Rect area = new Rect(12f, 12f, 360f, 180f);
+    [SerializeField] private Rect area = new Rect(12f, 12f, 420f, 300f);
 
     private GUIStyle labelStyle;
 
@@ -74,6 +74,38 @@ public class NetworkDebugHud : MonoBehaviour
         {
             GUILayout.Label($"RoomHostClientId: {roomHostAuthority.HostClientId.Value}", labelStyle);
         }
+
+        DrawRoomPlayerInfo(networkManager);
+    }
+
+    private void DrawRoomPlayerInfo(NetworkManager networkManager)
+    {
+        // Draw the replicated room player list and expose temporary Kick buttons to the room host.
+        RoomPlayerRegistry registry = RoomPlayerRegistry.Instance;
+        if (registry == null || !registry.IsSpawned || registry.Players == null)
+        {
+            GUILayout.Label("Room Players: Not Spawned", labelStyle);
+            return;
+        }
+
+        GUILayout.Label($"Room Players: {registry.Players.Count}", labelStyle);
+        bool canKick = IsLocalRoomHost();
+        for (int i = 0; i < registry.Players.Count; i++)
+        {
+            RoomPlayerEntry entry = registry.Players[i];
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(FormatHudPlayerLabel(entry), labelStyle, GUILayout.Width(260f));
+
+            if (canKick && !IsLocalClient(networkManager, entry.ClientId))
+            {
+                if (GUILayout.Button("Kick", GUILayout.Width(70f)))
+                {
+                    RequestKick(entry.ClientId);
+                }
+            }
+
+            GUILayout.EndHorizontal();
+        }
     }
 
     private void DrawMatchInfo()
@@ -88,6 +120,53 @@ public class NetworkDebugHud : MonoBehaviour
 
         GUILayout.Label($"Match State: {matchStateController.State.Value}", labelStyle);
         GUILayout.Label($"Remaining: {Mathf.CeilToInt(matchStateController.RemainingTime.Value)}s", labelStyle);
+    }
+
+    private static string FormatHudPlayerLabel(RoomPlayerEntry entry)
+    {
+        // Build a compact debug label with host/local annotations.
+        string label = entry.DisplayName.IsEmpty ? $"Player {entry.ClientId}" : entry.DisplayName.ToString();
+        RoomHostAuthority roomHostAuthority = RoomHostAuthority.Instance;
+        if (roomHostAuthority != null && roomHostAuthority.IsSpawned && roomHostAuthority.HostClientId.Value == entry.ClientId)
+        {
+            label += " (Host)";
+        }
+
+        if (NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.IsClient &&
+            NetworkManager.Singleton.LocalClientId == entry.ClientId)
+        {
+            label += " (You)";
+        }
+
+        return label;
+    }
+
+    private static bool IsLocalRoomHost()
+    {
+        // Check whether this local client currently owns room host authority.
+        RoomHostAuthority roomHostAuthority = RoomHostAuthority.Instance;
+        return roomHostAuthority != null &&
+            roomHostAuthority.IsSpawned &&
+            roomHostAuthority.IsLocalRoomHost();
+    }
+
+    private static bool IsLocalClient(NetworkManager networkManager, ulong clientId)
+    {
+        // Compare a listed client id with the local client id when running as a client.
+        return networkManager != null &&
+            networkManager.IsClient &&
+            networkManager.LocalClientId == clientId;
+    }
+
+    private static void RequestKick(ulong clientId)
+    {
+        // Forward a temporary HUD button click to the authoritative match controller.
+        MatchStateController matchStateController = MatchStateController.Instance;
+        if (matchStateController != null && matchStateController.IsSpawned)
+        {
+            matchStateController.RequestKickClient(clientId);
+        }
     }
 
     private void EnsureStyle()

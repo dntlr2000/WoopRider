@@ -52,8 +52,13 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     private void Update()
     {
-        // Fire once per input press while respecting the controller fire-rate stat.
-        if (!HasLocalControl() || IsBlockedByHookAction() || !ShouldFireThisFrame() || Time.time < nextFireTime)
+        // Fire from input or from the temporary auto-fire buff while respecting fire-rate limits.
+        if (!HasLocalControl() || IsBlockedByHookAction() || Time.time < nextFireTime)
+        {
+            return;
+        }
+
+        if (!ShouldFireThisFrame() && !ShouldAutoFireThisFrame())
         {
             return;
         }
@@ -63,8 +68,8 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     private void FireProjectile()
     {
-        // Aim from the screen center ray and spawn or request a projectile visual.
-        if (!TryGetProjectileAttack(out EquipmentAttackSettings attackSettings))
+        // Aim from the screen center ray and route the attack through the equipped weapon mode.
+        if (!TryGetAttackSettings(out EquipmentAttackSettings attackSettings))
         {
             return;
         }
@@ -81,9 +86,23 @@ public class PlayerProjectileShooter : MonoBehaviour
         float shotsPerSecond = GetShotsPerSecond(attackSettings);
         nextFireTime = Time.time + 1f / shotsPerSecond;
 
+        float attackRange = GetAttackRange(attackSettings);
         Ray aimRay = cameraToUse.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
-        Vector3 aimPoint = ResolveAimPoint(aimRay, GetAttackRange(attackSettings));
+        Vector3 aimPoint = ResolveAimPoint(aimRay, attackRange);
         Vector3 muzzlePosition = ResolveMuzzlePosition();
+
+        if (attackSettings.AttackMode == EquipmentAttackMode.Hitscan)
+        {
+            FireHitscan(muzzlePosition, aimPoint);
+            return;
+        }
+
+        if (attackSettings.AttackMode == EquipmentAttackMode.Cannon)
+        {
+            FireCannon(muzzlePosition, aimPoint);
+            return;
+        }
+
         float resolvedProjectileSpeed = GetProjectileSpeed(attackSettings);
         float resolvedProjectileRadius = GetProjectileRadius(attackSettings);
         float resolvedProjectileLifeTime = GetProjectileLifeTime(attackSettings);
@@ -95,7 +114,59 @@ public class PlayerProjectileShooter : MonoBehaviour
             return;
         }
 
-        SimpleProjectileVisual.Spawn(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime);
+        SimpleProjectileVisual.Spawn(
+            muzzlePosition,
+            aimPoint,
+            resolvedProjectileSpeed,
+            resolvedProjectileRadius,
+            resolvedProjectileLifeTime,
+            GetProjectileVisualPrefab(attackSettings),
+            GetProjectileVisualResourcePath(attackSettings));
+        TriggerShootAnimation();
+    }
+
+    private void FireHitscan(Vector3 muzzlePosition, Vector3 aimPoint)
+    {
+        // Send a hitscan attack to the network relay, or draw a local tracer for offline tests.
+        if (TrySendNetworkHitscan(muzzlePosition, aimPoint, out bool usedNetworkPath) || usedNetworkPath)
+        {
+            TriggerShootAnimation();
+            return;
+        }
+
+        SimpleHitscanVisual.Spawn(muzzlePosition, aimPoint);
+        TriggerShootAnimation();
+    }
+
+    private void FireCannon(Vector3 muzzlePosition, Vector3 aimPoint)
+    {
+        // Send a gravity-driven cannon shot to the network relay, or spawn a local ballistic visual for offline tests.
+        if (!TryGetAttackSettings(out EquipmentAttackSettings attackSettings))
+        {
+            return;
+        }
+
+        float resolvedProjectileSpeed = GetProjectileSpeed(attackSettings);
+        float resolvedProjectileRadius = GetProjectileRadius(attackSettings);
+        float resolvedProjectileLifeTime = GetProjectileLifeTime(attackSettings);
+        float resolvedProjectileGravity = GetProjectileGravity(attackSettings);
+
+        if (TrySendNetworkCannon(muzzlePosition, aimPoint, resolvedProjectileSpeed, resolvedProjectileRadius, resolvedProjectileLifeTime, out bool usedNetworkPath) ||
+            usedNetworkPath)
+        {
+            TriggerShootAnimation();
+            return;
+        }
+
+        SimpleProjectileVisual.SpawnBallistic(
+            muzzlePosition,
+            aimPoint,
+            resolvedProjectileSpeed,
+            resolvedProjectileRadius,
+            resolvedProjectileLifeTime,
+            resolvedProjectileGravity,
+            GetProjectileVisualPrefab(attackSettings),
+            GetProjectileVisualResourcePath(attackSettings));
         TriggerShootAnimation();
     }
 
@@ -242,6 +313,34 @@ public class PlayerProjectileShooter : MonoBehaviour
         return relay.RequestProjectileVisual(muzzlePosition, aimPoint, speed, radius, lifeTime);
     }
 
+    private bool TrySendNetworkHitscan(Vector3 muzzlePosition, Vector3 aimPoint, out bool usedNetworkPath)
+    {
+        // In multiplayer, relay hitscan attacks through the owned NetworkObject for server damage approval.
+        usedNetworkPath = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
+        NetworkPlayerAvatarRelay relay = ResolveLocalRelay();
+        if (relay == null)
+        {
+            return false;
+        }
+
+        usedNetworkPath = true;
+        return relay.RequestHitscanAttack(muzzlePosition, aimPoint);
+    }
+
+    private bool TrySendNetworkCannon(Vector3 muzzlePosition, Vector3 aimPoint, float speed, float radius, float lifeTime, out bool usedNetworkPath)
+    {
+        // In multiplayer, relay cannon shots through the owned NetworkObject for server splash approval.
+        usedNetworkPath = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
+        NetworkPlayerAvatarRelay relay = ResolveLocalRelay();
+        if (relay == null)
+        {
+            return false;
+        }
+
+        usedNetworkPath = true;
+        return relay.RequestCannonAttack(muzzlePosition, aimPoint, speed, radius, lifeTime);
+    }
+
     private NetworkPlayerAvatarRelay ResolveLocalRelay()
     {
         // Find the local player's relay on the spawned NetworkObject_Test.
@@ -275,9 +374,9 @@ public class PlayerProjectileShooter : MonoBehaviour
         return null;
     }
 
-    private bool TryGetProjectileAttack(out EquipmentAttackSettings attackSettings)
+    private bool TryGetAttackSettings(out EquipmentAttackSettings attackSettings)
     {
-        // Require an equipped attacking item and only accept projectile-mode equipment for this shooter.
+        // Require an equipped attacking item and return its supported attack settings.
         attackSettings = null;
         if (equipment == null)
         {
@@ -290,9 +389,16 @@ public class PlayerProjectileShooter : MonoBehaviour
         }
 
         attackSettings = equipment.CurrentEquipment.Attack;
-        if (attackSettings == null || attackSettings.AttackMode != EquipmentAttackMode.Projectile)
+        if (attackSettings == null)
         {
-            Debug.LogWarning($"[PlayerProjectileShooter] Equipment '{equipment.CurrentEquipment.DisplayName}' is not a projectile weapon.");
+            return false;
+        }
+
+        if (attackSettings.AttackMode != EquipmentAttackMode.Projectile &&
+            attackSettings.AttackMode != EquipmentAttackMode.Hitscan &&
+            attackSettings.AttackMode != EquipmentAttackMode.Cannon)
+        {
+            Debug.LogWarning($"[PlayerProjectileShooter] Equipment '{equipment.CurrentEquipment.DisplayName}' has unsupported attack mode {attackSettings.AttackMode}.");
             return false;
         }
 
@@ -338,6 +444,24 @@ public class PlayerProjectileShooter : MonoBehaviour
         return Mathf.Max(0.1f, attackSettings != null && attackSettings.ProjectileLifeTime > 0f ? attackSettings.ProjectileLifeTime : projectileLifeTime);
     }
 
+    private static float GetProjectileGravity(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve gravity for cannon-style projectile visuals.
+        return Mathf.Max(0f, attackSettings != null && attackSettings.ProjectileGravity > 0f ? attackSettings.ProjectileGravity : 18f);
+    }
+
+    private GameObject GetProjectileVisualPrefab(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve an optional per-equipment projectile prefab for offline or local fallback shots.
+        return attackSettings != null ? attackSettings.ProjectileVisualPrefab : null;
+    }
+
+    private string GetProjectileVisualResourcePath(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve an optional per-equipment Resources path for projectile visuals.
+        return attackSettings != null ? attackSettings.ProjectileVisualResourcePath : string.Empty;
+    }
+
     private bool ShouldFireThisFrame()
     {
         // Accept mouse, optional keyboard, and gamepad trigger fire inputs.
@@ -352,6 +476,12 @@ public class PlayerProjectileShooter : MonoBehaviour
         }
 
         return Gamepad.current != null && Gamepad.current.rightTrigger.wasPressedThisFrame;
+    }
+
+    private static bool ShouldAutoFireThisFrame()
+    {
+        // Treat an active replicated auto-fire buff as a held fire input.
+        return NetworkPlayerCombatState.LocalClientHasAutoFireBuff();
     }
 
     private bool ShouldBlockMouseFireForUi()

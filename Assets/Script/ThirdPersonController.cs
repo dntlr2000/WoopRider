@@ -315,6 +315,9 @@ public class ThirdPersonController : MonoBehaviour
         }
 
         float equipmentModifiedValue = equipment != null ? equipment.ModifyStat(statType, baseValue) : baseValue;
-        return PlayerStatsState.ApplyLocalClientStatBonus(statType, equipmentModifiedValue);
+        float collectedModifiedValue = PlayerStatsState.ApplyLocalClientStatBonus(statType, equipmentModifiedValue);
+        return statType == PlayerStatType.MoveSpeed
+            ? NetworkPlayerCombatState.ApplyLocalMoveSpeedMultiplier(collectedModifiedValue)
+            : collectedModifiedValue;
     }
 }

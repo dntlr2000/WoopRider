@@ -127,7 +127,39 @@ Transform:
   m_Children:
   - {fileID: 9080140130139975657}
   - {fileID: 1911474994192612455}
+  - {fileID: 4055605928237531006}
   m_Father: {fileID: 6725957549907750948}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &2718969931503197345
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4055605928237531006}
+  m_Layer: 0
+  m_Name: BuffEffectPoint
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4055605928237531006
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2718969931503197345}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 8152197633010061053}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &4262231236235085651
 GameObject:
@@ -414,6 +446,9 @@ MonoBehaviour:
   defaultMaxHealth: 100
   defaultDefense: 10
   equipmentBreakActionLockDuration: 3
+  defaultAttackBuffMultiplier: 2
+  defaultDamageTakenMultiplier: 0.5
+  defaultMoveSpeedBuffMultiplier: 2
   lowHealthSparkThreshold: 0.2
   lowHealthSparkPrefab: {fileID: 4391332916135280264, guid: 9a6f7cb59ead4712a2e26a0237d8f9c0, type: 3}
   lowHealthSparkAnchor: {fileID: 1911474994192612455}
@@ -421,6 +456,13 @@ MonoBehaviour:
   lowHealthSparkLocalEulerAngles: {x: -20, y: 180, z: 0}
   lowHealthSparkScale: 2
   lowHealthSparkRate: 14
+  attackUpEffectPrefab: {fileID: 0}
+  defenceUpEffectPrefab: {fileID: 0}
+  speedUpEffectPrefab: {fileID: 0}
+  buffEffectAnchor: {fileID: 0}
+  buffEffectLocalOffset: {x: 0, y: 0.25, z: 0}
+  buffEffectLocalEulerAngles: {x: 0, y: 0, z: 0}
+  buffEffectScale: 1
   damageHitEffectPrefab: {fileID: 6823302871133167919, guid: 3138a83bedbd6ad4481ba0b061da2eb6, type: 3}
   equipmentBreakExplosionPrefab: {fileID: 358637981425055526, guid: 8eb503696b886e04faff8fc0f480d473, type: 3}
   damageHitEffectEulerOffset: {x: 0, y: 0, z: 0}

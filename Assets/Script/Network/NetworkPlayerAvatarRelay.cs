@@ -1,4 +1,5 @@
 using System.Collections;
+using Unity.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Components;
 using UnityEngine;
@@ -6,6 +7,7 @@ using UnityEngine;
 [RequireComponent(typeof(NetworkObject))]
 public class NetworkPlayerAvatarRelay : NetworkBehaviour
 {
+    private const string DefaultCannonExplosionEffectResourcePath = "Effects/CustomEffects/Shoot_ExplosionA Variant";
     private const float MaxProjectileDistance = 120f;
     private const float MinProjectileSpeed = 1f;
     private const float MaxProjectileSpeed = 120f;
@@ -37,10 +39,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     private NetworkTransform networkTransform;
     private Renderer[] renderers;
     private Collider[] colliders;
+    private GameObject resolvedDefaultCannonExplosionEffectPrefab;
     private float nextSendTime;
     private float nextServerAttackTime;
     private Vector3 lastSentPosition;
     private Quaternion lastSentRotation = Quaternion.identity;
+    private bool triedLoadDefaultCannonExplosionEffectPrefab;
 
     private void Awake()
     {
@@ -114,6 +118,86 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         SubmitProjectileVisualServerRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+        return true;
+    }
+
+    public bool RequestHitscanAttack(Vector3 origin, Vector3 targetPoint)
+    {
+        // Let the owning client ask the server to resolve an instant hitscan attack.
+        if (!IsSpawned || !IsOwner)
+        {
+            return false;
+        }
+
+        if (!TryGetHitscanAttackSettings(requireResolvedEquipment: IsServer, out EquipmentAttackSettings attackSettings))
+        {
+            return false;
+        }
+
+        if (!TrySanitizeHitscan(origin, targetPoint, attackSettings, out HitscanPacket packet))
+        {
+            return false;
+        }
+
+        if (IsServer)
+        {
+            if (!TryApproveServerHitscan(ref packet, attackSettings, "local-server"))
+            {
+                return false;
+            }
+
+            TryApplyHitscanDamage(packet, attackSettings);
+            ApplyAttackFacingFromHitscan(packet);
+            PlayShootAnimationClientRpc(transform.rotation);
+            SpawnHitscanVisualClientRpc(packet.Origin, packet.TargetPoint);
+            return true;
+        }
+
+        SubmitHitscanAttackServerRpc(packet.Origin, packet.TargetPoint);
+        return true;
+    }
+
+    public bool RequestCannonAttack(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime)
+    {
+        // Let the owning client ask the server to resolve a gravity-driven cannon attack.
+        if (!IsSpawned || !IsOwner)
+        {
+            return false;
+        }
+
+        if (!TryGetCannonAttackSettings(requireResolvedEquipment: IsServer, out EquipmentAttackSettings attackSettings))
+        {
+            return false;
+        }
+
+        ApplyProjectileEquipmentSettings(attackSettings, origin, ref targetPoint, ref speed, ref radius, ref lifeTime);
+
+        if (!TrySanitizeProjectile(origin, targetPoint, speed, radius, lifeTime, out ProjectilePacket packet))
+        {
+            return false;
+        }
+
+        if (IsServer)
+        {
+            if (!TryApproveServerCannon(ref packet, attackSettings, "local-server"))
+            {
+                return false;
+            }
+
+            StartServerCannonDamage(packet, attackSettings);
+            ApplyAttackFacingFromProjectile(packet);
+            PlayShootAnimationClientRpc(transform.rotation);
+            SpawnCannonProjectileVisualClientRpc(
+                packet.Origin,
+                packet.TargetPoint,
+                packet.Speed,
+                packet.Radius,
+                packet.LifeTime,
+                ResolveProjectileGravity(attackSettings));
+            return true;
+        }
+
+        SubmitCannonAttackServerRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
         return true;
     }
 
@@ -242,6 +326,80 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
     }
 
+    [ServerRpc(RequireOwnership = false)]
+    private void SubmitHitscanAttackServerRpc(Vector3 origin, Vector3 targetPoint, ServerRpcParams rpcParams = default)
+    {
+        // Validate the owner request before resolving hitscan damage and tracer feedback.
+        if (rpcParams.Receive.SenderClientId != OwnerClientId)
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected hitscan sender={rpcParams.Receive.SenderClientId} owner={OwnerClientId}");
+            return;
+        }
+
+        if (!TryGetHitscanAttackSettings(requireResolvedEquipment: true, out EquipmentAttackSettings attackSettings))
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected hitscan without valid hitscan equipment sender={rpcParams.Receive.SenderClientId}");
+            return;
+        }
+
+        if (!TrySanitizeHitscan(origin, targetPoint, attackSettings, out HitscanPacket packet))
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected invalid hitscan sender={rpcParams.Receive.SenderClientId}");
+            return;
+        }
+
+        if (!TryApproveServerHitscan(ref packet, attackSettings, $"client={rpcParams.Receive.SenderClientId}"))
+        {
+            return;
+        }
+
+        TryApplyHitscanDamage(packet, attackSettings);
+        ApplyAttackFacingFromHitscan(packet);
+        PlayShootAnimationClientRpc(transform.rotation);
+        SpawnHitscanVisualClientRpc(packet.Origin, packet.TargetPoint);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void SubmitCannonAttackServerRpc(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, ServerRpcParams rpcParams = default)
+    {
+        // Validate the owner request before resolving cannon travel, explosion, and splash damage.
+        if (rpcParams.Receive.SenderClientId != OwnerClientId)
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected cannon sender={rpcParams.Receive.SenderClientId} owner={OwnerClientId}");
+            return;
+        }
+
+        if (!TryGetCannonAttackSettings(requireResolvedEquipment: true, out EquipmentAttackSettings attackSettings))
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected cannon without valid cannon equipment sender={rpcParams.Receive.SenderClientId}");
+            return;
+        }
+
+        ApplyProjectileEquipmentSettings(attackSettings, origin, ref targetPoint, ref speed, ref radius, ref lifeTime);
+
+        if (!TrySanitizeProjectile(origin, targetPoint, speed, radius, lifeTime, out ProjectilePacket packet))
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Rejected invalid cannon sender={rpcParams.Receive.SenderClientId}");
+            return;
+        }
+
+        if (!TryApproveServerCannon(ref packet, attackSettings, $"client={rpcParams.Receive.SenderClientId}"))
+        {
+            return;
+        }
+
+        StartServerCannonDamage(packet, attackSettings);
+        ApplyAttackFacingFromProjectile(packet);
+        PlayShootAnimationClientRpc(transform.rotation);
+        SpawnCannonProjectileVisualClientRpc(
+            packet.Origin,
+            packet.TargetPoint,
+            packet.Speed,
+            packet.Radius,
+            packet.LifeTime,
+            ResolveProjectileGravity(attackSettings));
+    }
+
     public void PlayHookAnimation()
     {
         // Play the hook action on this network avatar visual.
@@ -266,8 +424,44 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     [ClientRpc]
     private void SpawnProjectileVisualClientRpc(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime)
     {
-        // Spawn the same temporary projectile visual on every connected client.
-        SimpleProjectileVisual.Spawn(origin, targetPoint, speed, radius, lifeTime);
+        // Spawn the approved projectile visual on every connected client using the shooter's equipment data.
+        SimpleProjectileVisual.Spawn(
+            origin,
+            targetPoint,
+            speed,
+            radius,
+            lifeTime,
+            ResolveProjectileVisualPrefab(),
+            ResolveProjectileVisualResourcePath());
+    }
+
+    [ClientRpc]
+    private void SpawnHitscanVisualClientRpc(Vector3 origin, Vector3 targetPoint)
+    {
+        // Spawn a short tracer line on every connected client for instant hitscan feedback.
+        SimpleHitscanVisual.Spawn(origin, targetPoint);
+    }
+
+    [ClientRpc]
+    private void SpawnCannonProjectileVisualClientRpc(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, float gravity)
+    {
+        // Spawn a gravity-driven cannon projectile visual on every connected client.
+        SimpleProjectileVisual.SpawnBallistic(
+            origin,
+            targetPoint,
+            speed,
+            radius,
+            lifeTime,
+            gravity,
+            ResolveProjectileVisualPrefab(),
+            ResolveProjectileVisualResourcePath());
+    }
+
+    [ClientRpc]
+    private void SpawnCannonExplosionClientRpc(Vector3 position, float gameplayRadius, float effectScale, FixedString512Bytes effectResourcePath)
+    {
+        // Spawn the cannon explosion effect at the server-approved impact point.
+        PlayCannonExplosionEffect(position, gameplayRadius, effectScale, effectResourcePath.ToString());
     }
 
     [ClientRpc]
@@ -281,7 +475,19 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     private void ApplyAttackFacingFromProjectile(ProjectilePacket packet)
     {
         // Rotate the server avatar to the horizontal projectile direction for attack animation sync.
-        Vector3 direction = packet.TargetPoint - packet.Origin;
+        ApplyAttackFacingFromPoints(packet.Origin, packet.TargetPoint);
+    }
+
+    private void ApplyAttackFacingFromHitscan(HitscanPacket packet)
+    {
+        // Rotate the server avatar to the horizontal hitscan direction for attack animation sync.
+        ApplyAttackFacingFromPoints(packet.Origin, packet.TargetPoint);
+    }
+
+    private void ApplyAttackFacingFromPoints(Vector3 origin, Vector3 targetPoint)
+    {
+        // Rotate this avatar toward a server-approved attack direction.
+        Vector3 direction = targetPoint - origin;
         direction.y = 0f;
         if (direction.sqrMagnitude <= 0.0001f)
         {
@@ -378,6 +584,177 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         return true;
     }
 
+    private bool TryGetHitscanAttackSettings(bool requireResolvedEquipment, out EquipmentAttackSettings attackSettings)
+    {
+        // Validate that this player has an attacking hitscan-mode equipment state.
+        attackSettings = null;
+        if (equipmentState == null)
+        {
+            equipmentState = GetComponent<NetworkPlayerEquipmentState>();
+        }
+
+        if (equipmentState == null)
+        {
+            return !requireResolvedEquipment;
+        }
+
+        EquipmentDefinition equipment = equipmentState.CurrentEquipment;
+        if (equipment == null)
+        {
+            return !requireResolvedEquipment;
+        }
+
+        if (!equipmentState.CanAttack ||
+            equipment.Attack == null ||
+            equipment.Attack.AttackMode != EquipmentAttackMode.Hitscan)
+        {
+            return false;
+        }
+
+        attackSettings = equipment.Attack;
+        return true;
+    }
+
+    private bool TryGetCannonAttackSettings(bool requireResolvedEquipment, out EquipmentAttackSettings attackSettings)
+    {
+        // Validate that this player has an attacking cannon-mode equipment state.
+        attackSettings = null;
+        if (equipmentState == null)
+        {
+            equipmentState = GetComponent<NetworkPlayerEquipmentState>();
+        }
+
+        if (equipmentState == null)
+        {
+            return !requireResolvedEquipment;
+        }
+
+        EquipmentDefinition equipment = equipmentState.CurrentEquipment;
+        if (equipment == null)
+        {
+            return !requireResolvedEquipment;
+        }
+
+        if (!equipmentState.CanAttack ||
+            equipment.Attack == null ||
+            equipment.Attack.AttackMode != EquipmentAttackMode.Cannon)
+        {
+            return false;
+        }
+
+        attackSettings = equipment.Attack;
+        return true;
+    }
+
+    private GameObject ResolveProjectileVisualPrefab()
+    {
+        // Resolve the firing equipment's configured projectile prefab for client-side visuals.
+        EquipmentAttackSettings attackSettings = ResolveCurrentAttackSettings();
+        return attackSettings != null ? attackSettings.ProjectileVisualPrefab : null;
+    }
+
+    private string ResolveProjectileVisualResourcePath()
+    {
+        // Resolve the firing equipment's configured Resources path for client-side projectile visuals.
+        EquipmentAttackSettings attackSettings = ResolveCurrentAttackSettings();
+        return attackSettings != null ? attackSettings.ProjectileVisualResourcePath : string.Empty;
+    }
+
+    private GameObject ResolveCannonExplosionEffectPrefab(string resourcePath)
+    {
+        // Resolve a shot-specific Resources explosion prefab, falling back to the shared cannon effect.
+        if (!string.IsNullOrWhiteSpace(resourcePath))
+        {
+            GameObject configuredPrefab = Resources.Load<GameObject>(resourcePath.Trim());
+            if (configuredPrefab != null)
+            {
+                return configuredPrefab;
+            }
+        }
+
+        return ResolveDefaultCannonExplosionEffectPrefab();
+    }
+
+    private static string ResolveExplosionEffectResourcePath(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve the Resources path that should travel with this cannon shot.
+        return attackSettings != null && !string.IsNullOrWhiteSpace(attackSettings.ExplosionEffectResourcePath)
+            ? attackSettings.ExplosionEffectResourcePath.Trim()
+            : DefaultCannonExplosionEffectResourcePath;
+    }
+
+    private GameObject ResolveDefaultCannonExplosionEffectPrefab()
+    {
+        // Cache the default explosion effect so missing per-equipment data still has feedback.
+        if (triedLoadDefaultCannonExplosionEffectPrefab)
+        {
+            return resolvedDefaultCannonExplosionEffectPrefab;
+        }
+
+        triedLoadDefaultCannonExplosionEffectPrefab = true;
+        resolvedDefaultCannonExplosionEffectPrefab = Resources.Load<GameObject>(DefaultCannonExplosionEffectResourcePath);
+        if (resolvedDefaultCannonExplosionEffectPrefab == null)
+        {
+            Debug.LogWarning($"[NetworkPlayerAvatarRelay] Cannon explosion effect prefab not found path={DefaultCannonExplosionEffectResourcePath}");
+        }
+
+        return resolvedDefaultCannonExplosionEffectPrefab;
+    }
+
+    private static float ResolveExplosionEffectScale(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve visual-only explosion scale separately from gameplay radius for easier tuning.
+        return Mathf.Max(0.01f, attackSettings != null ? attackSettings.ExplosionEffectScale : 1f);
+    }
+
+    private void PlayCannonExplosionEffect(Vector3 position, float gameplayRadius, float effectScale, string effectResourcePath)
+    {
+        // Instantiate the configured cannon explosion effect or a simple fallback flash.
+        GameObject explosionPrefab = ResolveCannonExplosionEffectPrefab(effectResourcePath);
+        if (explosionPrefab == null)
+        {
+            CreateFallbackCannonExplosion(position, gameplayRadius, effectScale);
+            return;
+        }
+
+        GameObject explosion = Instantiate(explosionPrefab, position, Quaternion.identity);
+        explosion.transform.localScale *= Mathf.Max(0.01f, effectScale);
+        Destroy(explosion, 4f);
+    }
+
+    private static void CreateFallbackCannonExplosion(Vector3 position, float gameplayRadius, float effectScale)
+    {
+        // Keep cannon feedback visible even if the configured Resources effect is missing.
+        GameObject explosion = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        explosion.name = "FallbackCannonExplosion";
+        explosion.transform.position = position;
+        explosion.transform.localScale = Vector3.one * Mathf.Max(0.05f, gameplayRadius * 2f * effectScale);
+
+        if (explosion.TryGetComponent(out Collider explosionCollider))
+        {
+            explosionCollider.enabled = false;
+        }
+
+        if (explosion.TryGetComponent(out Renderer explosionRenderer))
+        {
+            explosionRenderer.material.color = new Color(1f, 0.45f, 0.05f, 0.65f);
+        }
+
+        Destroy(explosion, 0.35f);
+    }
+
+    private EquipmentAttackSettings ResolveCurrentAttackSettings()
+    {
+        // Read the currently replicated equipment definition without enforcing attack validity.
+        if (equipmentState == null)
+        {
+            equipmentState = GetComponent<NetworkPlayerEquipmentState>();
+        }
+
+        EquipmentDefinition equipment = equipmentState != null ? equipmentState.CurrentEquipment : null;
+        return equipment != null ? equipment.Attack : null;
+    }
+
     private static void ApplyProjectileEquipmentSettings(EquipmentAttackSettings attackSettings, Vector3 origin, ref Vector3 targetPoint, ref float speed, ref float radius, ref float lifeTime)
     {
         // Prefer server-known equipment projectile settings over client-provided visual values.
@@ -400,6 +777,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         lifeTime = attackSettings.ProjectileLifeTime > 0f ? attackSettings.ProjectileLifeTime : lifeTime;
     }
 
+    private static float ResolveProjectileGravity(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve cannon gravity from equipment data with a conservative fallback.
+        return Mathf.Max(0f, attackSettings != null && attackSettings.ProjectileGravity > 0f ? attackSettings.ProjectileGravity : 18f);
+    }
+
     private bool TryApproveServerProjectile(ref ProjectilePacket packet, EquipmentAttackSettings attackSettings, string requesterLabel)
     {
         // Server-side gate for match state, attack rate, and client-provided aim origin.
@@ -417,6 +800,54 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         if (!TryConsumeServerAttackCooldown(attackSettings, out float cooldownRemaining))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] Rejected projectile cooldown owner={OwnerClientId} requester={requesterLabel} remaining={cooldownRemaining:0.00}s");
+            return false;
+        }
+
+        ApplyServerAimOriginCorrection(ref packet);
+        return true;
+    }
+
+    private bool TryApproveServerHitscan(ref HitscanPacket packet, EquipmentAttackSettings attackSettings, string requesterLabel)
+    {
+        // Server-side gate for match state, attack rate, and client-provided hitscan origin.
+        if (!IsServer)
+        {
+            return false;
+        }
+
+        if (!CanAttackInCurrentMatchState(out NetworkMatchState currentState))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected hitscan outside attack state owner={OwnerClientId} requester={requesterLabel} state={currentState}");
+            return false;
+        }
+
+        if (!TryConsumeServerAttackCooldown(attackSettings, out float cooldownRemaining))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected hitscan cooldown owner={OwnerClientId} requester={requesterLabel} remaining={cooldownRemaining:0.00}s");
+            return false;
+        }
+
+        ApplyServerAimOriginCorrection(ref packet);
+        return true;
+    }
+
+    private bool TryApproveServerCannon(ref ProjectilePacket packet, EquipmentAttackSettings attackSettings, string requesterLabel)
+    {
+        // Server-side gate for match state, attack rate, and client-provided cannon aim origin.
+        if (!IsServer)
+        {
+            return false;
+        }
+
+        if (!CanAttackInCurrentMatchState(out NetworkMatchState currentState))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected cannon outside attack state owner={OwnerClientId} requester={requesterLabel} state={currentState}");
+            return false;
+        }
+
+        if (!TryConsumeServerAttackCooldown(attackSettings, out float cooldownRemaining))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] Rejected cannon cooldown owner={OwnerClientId} requester={requesterLabel} remaining={cooldownRemaining:0.00}s");
             return false;
         }
 
@@ -490,6 +921,27 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         packet.TargetPoint = serverOrigin + direction.normalized * distance;
     }
 
+    private void ApplyServerAimOriginCorrection(ref HitscanPacket packet)
+    {
+        // Pull suspicious hitscan origins back near the server-known player position while preserving aim direction.
+        float tolerance = Mathf.Max(0f, serverAimOriginTolerance);
+        Vector3 serverOrigin = ResolveServerProjectileOrigin();
+        if (tolerance > 0f && (packet.Origin - serverOrigin).sqrMagnitude <= tolerance * tolerance)
+        {
+            return;
+        }
+
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return;
+        }
+
+        packet.Origin = serverOrigin;
+        packet.TargetPoint = serverOrigin + direction.normalized * distance;
+    }
+
     private Vector3 ResolveServerProjectileOrigin()
     {
         // Estimate the authoritative muzzle point from the network avatar transform.
@@ -505,6 +957,17 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         StartCoroutine(ResolveProjectileDamageOverTravel(packet, attackSettings));
+    }
+
+    private void StartServerCannonDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Resolve cannon travel on the server so splash damage uses an authoritative impact point.
+        if (!IsServer)
+        {
+            return;
+        }
+
+        StartCoroutine(ResolveCannonDamageOverTravel(packet, attackSettings));
     }
 
     private IEnumerator ResolveProjectileDamageOverTravel(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
@@ -545,17 +1008,74 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
     }
 
+    private IEnumerator ResolveCannonDamageOverTravel(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Advance the cannon projectile with gravity and explode only after a server-side collision.
+        Vector3 toTarget = packet.TargetPoint - packet.Origin;
+        if (toTarget.sqrMagnitude <= 0.0001f)
+        {
+            yield break;
+        }
+
+        Vector3 velocity = toTarget.normalized * Mathf.Max(MinProjectileSpeed, packet.Speed);
+        float gravity = ResolveProjectileGravity(attackSettings);
+        float remainingLifetime = Mathf.Max(0f, packet.LifeTime);
+        float traveledDistance = 0f;
+        Vector3 segmentOrigin = packet.Origin;
+
+        while (IsServer && IsSpawned && remainingLifetime > 0f && traveledDistance < MaxProjectileDistance)
+        {
+            float deltaTime = Mathf.Min(Mathf.Max(Time.deltaTime, 0.001f), remainingLifetime);
+            velocity += Vector3.down * gravity * deltaTime;
+            Vector3 segmentTarget = segmentOrigin + velocity * deltaTime;
+
+            ProjectilePacket segmentPacket = packet;
+            segmentPacket.Origin = segmentOrigin;
+            segmentPacket.TargetPoint = segmentTarget;
+
+            if (TryFindCannonImpact(segmentPacket, out Vector3 impactPoint))
+            {
+                ExplodeCannonAt(impactPoint, attackSettings);
+                yield break;
+            }
+
+            traveledDistance += Vector3.Distance(segmentOrigin, segmentTarget);
+            remainingLifetime -= deltaTime;
+            segmentOrigin = segmentTarget;
+            yield return null;
+        }
+    }
+
     private bool TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
-        // Server resolves the nearest damageable target, including players and destructible boxes.
+        // Server resolves projectile damage against the nearest damageable target.
+        return TryApplyLineAttackDamage(packet, attackSettings, "Projectile");
+    }
+
+    private bool TryApplyHitscanDamage(HitscanPacket packet, EquipmentAttackSettings attackSettings)
+    {
+        // Server resolves hitscan damage immediately along the approved attack line.
+        ProjectilePacket linePacket = new()
+        {
+            Origin = packet.Origin,
+            TargetPoint = packet.TargetPoint,
+            Radius = packet.Radius,
+            Speed = MaxProjectileSpeed,
+            LifeTime = MinProjectileLifetime
+        };
+
+        return TryApplyLineAttackDamage(linePacket, attackSettings, "Hitscan");
+    }
+
+    private bool TryApplyLineAttackDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings, string attackLabel)
+    {
+        // Server resolves the nearest damageable target, including players and destructible pickups.
         if (!IsServer)
         {
             return false;
         }
 
-        float damageMultiplier = attackSettings != null ? Mathf.Max(0f, attackSettings.DamageMultiplier) : 1f;
-        float equipmentDamage = fallbackAttackDamage * damageMultiplier;
-        float damage = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.AttackPower, equipmentDamage);
+        float damage = ResolveOutgoingAttackDamage(attackSettings);
         if (damage <= 0f)
         {
             return false;
@@ -580,7 +1100,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
         if (nearestPickupKind != 0 && (!hitPlayer || nearestPickupDistance <= playerHitDistance))
         {
-            return ApplyProjectilePickupDamage(nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
+            return ApplyLineAttackPickupDamage(attackLabel, nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
         }
 
         if (!hitPlayer)
@@ -591,31 +1111,191 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         Vector3 hitDirection = (packet.TargetPoint - packet.Origin).normalized;
         if (targetCombatState.ApplyDamage(damage, OwnerClientId, playerHitPoint, hitDirection))
         {
-            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
+            Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
             return true;
         }
 
         return false;
     }
 
-    private bool ApplyProjectilePickupDamage(int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
+    private float ResolveOutgoingAttackDamage(EquipmentAttackSettings attackSettings)
     {
-        // Apply damage to the nearest server-managed pickup target hit by the projectile path.
+        // Resolve base equipment damage, collected attack stat stacks, and temporary outgoing buffs.
+        float damageMultiplier = attackSettings != null ? Mathf.Max(0f, attackSettings.DamageMultiplier) : 1f;
+        float equipmentDamage = fallbackAttackDamage * damageMultiplier;
+        float damage = PlayerStatsState.ApplyCollectedStatBonus(OwnerClientId, PlayerStatType.AttackPower, equipmentDamage);
+        return NetworkPlayerCombatState.ApplyOutgoingDamageMultiplier(OwnerClientId, damage);
+    }
+
+    private bool TryFindCannonImpact(ProjectilePacket packet, out Vector3 impactPoint)
+    {
+        // Find the nearest player, pickup, or world collision along one server cannon segment.
+        impactPoint = default;
+        float nearestDistance = float.MaxValue;
+        bool foundImpact = false;
+
+        if (TryFindProjectileTarget(packet, out _, out Vector3 playerHitPoint, out float playerHitDistance))
+        {
+            nearestDistance = playerHitDistance;
+            impactPoint = playerHitPoint;
+            foundImpact = true;
+        }
+
+        if (TryFindProjectileBoxTarget(packet, out _, out Vector3 boxHitPoint, out float boxHitDistance) &&
+            boxHitDistance < nearestDistance)
+        {
+            nearestDistance = boxHitDistance;
+            impactPoint = boxHitPoint;
+            foundImpact = true;
+        }
+
+        if (TryFindProjectileEquipmentTarget(packet, out _, out Vector3 equipmentHitPoint, out float equipmentHitDistance) &&
+            equipmentHitDistance < nearestDistance)
+        {
+            nearestDistance = equipmentHitDistance;
+            impactPoint = equipmentHitPoint;
+            foundImpact = true;
+        }
+
+        if (TryFindWorldProjectileBlock(packet, out Vector3 worldHitPoint, out float worldHitDistance) &&
+            worldHitDistance < nearestDistance)
+        {
+            impactPoint = worldHitPoint;
+            foundImpact = true;
+        }
+
+        return foundImpact;
+    }
+
+    private bool TryFindWorldProjectileBlock(ProjectilePacket packet, out Vector3 hitPoint, out float hitDistance)
+    {
+        // Find the nearest non-player collider that should make a cannon shell explode.
+        hitPoint = default;
+        hitDistance = float.MaxValue;
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return false;
+        }
+
+        RaycastHit[] hits = Physics.SphereCastAll(
+            packet.Origin,
+            packet.Radius,
+            direction.normalized,
+            distance,
+            ~0,
+            QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            RaycastHit hit = hits[i];
+            if (hit.collider == null || ShouldIgnoreWorldProjectileBlock(hit.collider))
+            {
+                continue;
+            }
+
+            if (hit.distance < hitDistance)
+            {
+                hitDistance = hit.distance;
+                hitPoint = hit.point;
+            }
+        }
+
+        return hitDistance < float.MaxValue;
+    }
+
+    private bool ShouldIgnoreWorldProjectileBlock(Collider targetCollider)
+    {
+        // Ignore player bodies in the generic world pass because player collisions are handled separately.
+        if (targetCollider == null)
+        {
+            return true;
+        }
+
+        Transform targetTransform = targetCollider.transform;
+        if (targetTransform == transform || targetTransform.IsChildOf(transform))
+        {
+            return true;
+        }
+
+        return targetCollider.GetComponentInParent<NetworkPlayerCombatState>() != null;
+    }
+
+    private void ExplodeCannonAt(Vector3 impactPoint, EquipmentAttackSettings attackSettings)
+    {
+        // Apply splash damage around the impact point and replicate the explosion feedback.
+        float radius = ResolveExplosionRadius(attackSettings);
+        float damage = ResolveOutgoingAttackDamage(attackSettings);
+        int playerHitCount = 0;
+        int pickupHitCount = 0;
+
+        if (damage > 0f)
+        {
+            playerHitCount = NetworkPlayerCombatState.ApplySplashDamage(
+                impactPoint,
+                radius,
+                damage,
+                OwnerClientId,
+                ResolveSplashMinimumDamageMultiplier(attackSettings),
+                ResolveSelfSplashDamageMultiplier(attackSettings));
+
+            GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+            if (pickupManager != null)
+            {
+                pickupHitCount = pickupManager.ApplySplashDamage(
+                    impactPoint,
+                    radius,
+                    damage,
+                    OwnerClientId,
+                    ResolveSplashMinimumDamageMultiplier(attackSettings));
+            }
+        }
+
+        SpawnCannonExplosionClientRpc(
+            impactPoint,
+            radius,
+            ResolveExplosionEffectScale(attackSettings),
+            new FixedString512Bytes(ResolveExplosionEffectResourcePath(attackSettings)));
+        Debug.Log($"[NetworkPlayerAvatarRelay] Cannon exploded attacker={OwnerClientId} point={impactPoint} radius={radius:0.00} playerHits={playerHitCount} pickupHits={pickupHitCount}");
+    }
+
+    private static float ResolveExplosionRadius(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve cannon gameplay radius from equipment data with a safe fallback.
+        return Mathf.Max(0.01f, attackSettings != null && attackSettings.ExplosionRadius > 0f ? attackSettings.ExplosionRadius : 0.5f);
+    }
+
+    private static float ResolveSplashMinimumDamageMultiplier(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve the outer-edge splash damage ratio.
+        return Mathf.Clamp01(attackSettings != null ? attackSettings.SplashMinimumDamageMultiplier : 0.4f);
+    }
+
+    private static float ResolveSelfSplashDamageMultiplier(EquipmentAttackSettings attackSettings)
+    {
+        // Resolve the self-damage reduction multiplier for cannon splash.
+        return Mathf.Clamp01(attackSettings != null ? attackSettings.SelfSplashDamageMultiplier : 0.5f);
+    }
+
+    private bool ApplyLineAttackPickupDamage(string attackLabel, int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
+    {
+        // Apply damage to the nearest server-managed pickup target hit by a line attack path.
         GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
         if (pickupManager == null)
         {
             return false;
         }
 
-        if (pickupKind == 1 && pickupManager.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId))
+        if (pickupKind == 1 && pickupManager.TryApplyBoxDamage(boxSlotId, damage, OwnerClientId, boxHitPoint))
         {
-            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
+            Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit box attacker={OwnerClientId} slot={boxSlotId} point={boxHitPoint}");
             return true;
         }
 
         if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(equipmentSlotId, damage, OwnerClientId))
         {
-            Debug.Log($"[NetworkPlayerAvatarRelay] Projectile hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
+            Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
             return true;
         }
 
@@ -825,6 +1505,39 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         return true;
     }
 
+    private static bool TrySanitizeHitscan(Vector3 origin, Vector3 targetPoint, EquipmentAttackSettings attackSettings, out HitscanPacket packet)
+    {
+        // Clamp hitscan data so clients cannot request unbounded instant attack lines.
+        packet = default;
+        if (!IsFinite(origin) || !IsFinite(targetPoint))
+        {
+            return false;
+        }
+
+        Vector3 toTarget = targetPoint - origin;
+        if (toTarget.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        float attackRange = attackSettings != null && attackSettings.Range > 0f
+            ? attackSettings.Range
+            : MaxProjectileDistance;
+        float distance = Mathf.Min(toTarget.magnitude, MaxProjectileDistance, attackRange);
+        float radius = attackSettings != null && attackSettings.ProjectileRadius > 0f
+            ? attackSettings.ProjectileRadius
+            : MinProjectileRadius;
+
+        packet = new HitscanPacket
+        {
+            Origin = origin,
+            TargetPoint = origin + toTarget.normalized * distance,
+            Radius = Mathf.Clamp(radius, MinProjectileRadius, MaxProjectileRadius)
+        };
+
+        return true;
+    }
+
     private static bool IsFinite(Vector3 value)
     {
         // Check each vector component without relying on newer float helper APIs.
@@ -844,6 +1557,13 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         public float Speed;
         public float Radius;
         public float LifeTime;
+    }
+
+    private struct HitscanPacket
+    {
+        public Vector3 Origin;
+        public Vector3 TargetPoint;
+        public float Radius;
     }
 
     private enum AnimationActionKind

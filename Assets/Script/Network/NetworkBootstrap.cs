@@ -1,3 +1,5 @@
+using System;
+using System.Text;
 using TMPro;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
@@ -6,6 +8,9 @@ using UnityEngine.UI;
 
 public class NetworkBootstrap : MonoBehaviour
 {
+    private const string ClientIdentityPrefsKey = "WoopRider.RoomClientIdentity";
+    private const string ConnectionPayloadPrefix = "WoopRiderRoomClient:";
+
     [Header("Transport")]
     [SerializeField] private string address = "127.0.0.1";
     [SerializeField] private ushort port = 7777;
@@ -24,6 +29,7 @@ public class NetworkBootstrap : MonoBehaviour
             return;
         }
 
+        ConfigureConnectionPayload();
         ConfigureTransport();
         bool started = NetworkManager.Singleton.StartHost();
         Debug.Log($"[NetworkBootstrap] StartHost address={address} port={port} success={started}");
@@ -45,6 +51,7 @@ public class NetworkBootstrap : MonoBehaviour
         }
 
         ApplyConnectionInput();
+        ConfigureConnectionPayload();
         if (!ConfigureTransport())
         {
             Debug.LogError("[NetworkBootstrap] StartClient failed. UnityTransport is missing.");
@@ -149,6 +156,33 @@ public class NetworkBootstrap : MonoBehaviour
         transport.SetConnectionData(address, port);
         Debug.Log($"[NetworkBootstrap] Transport configured address={address} port={port}");
         return true;
+    }
+
+    private void ConfigureConnectionPayload()
+    {
+        // Send a stable local identity so the server can apply room kick bans across reconnects.
+        if (NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        string payload = ConnectionPayloadPrefix + GetOrCreateClientIdentity();
+        NetworkManager.Singleton.NetworkConfig.ConnectionData = Encoding.UTF8.GetBytes(payload);
+    }
+
+    private static string GetOrCreateClientIdentity()
+    {
+        // Keep one client identity in PlayerPrefs so a kicked player cannot bypass a ban by reconnecting.
+        string clientIdentity = PlayerPrefs.GetString(ClientIdentityPrefsKey, string.Empty);
+        if (!string.IsNullOrWhiteSpace(clientIdentity))
+        {
+            return clientIdentity;
+        }
+
+        clientIdentity = Guid.NewGuid().ToString("N");
+        PlayerPrefs.SetString(ClientIdentityPrefsKey, clientIdentity);
+        PlayerPrefs.Save();
+        return clientIdentity;
     }
 
     private string GetAddressInput()

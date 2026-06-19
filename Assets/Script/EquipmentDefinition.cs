@@ -4,7 +4,8 @@ using UnityEngine;
 public enum EquipmentAttackMode : byte
 {
     Projectile = 0,
-    Hitscan = 1
+    Hitscan = 1,
+    Cannon = 2
 }
 
 [Serializable]
@@ -17,6 +18,20 @@ public class EquipmentAttackSettings
     [SerializeField] private float projectileSpeed = 32f;
     [SerializeField] private float projectileRadius = 0.12f;
     [SerializeField] private float projectileLifeTime = 4f;
+    [Header("Cannon")]
+    [SerializeField] private float projectileGravity = 18f;
+    [SerializeField] private float explosionRadius = 0.5f;
+    [Range(0f, 1f)]
+    [SerializeField] private float splashMinimumDamageMultiplier = 0.4f;
+    [Range(0f, 1f)]
+    [SerializeField] private float selfSplashDamageMultiplier = 0.5f;
+    [SerializeField] private GameObject explosionEffectPrefab;
+    [SerializeField] private string explosionEffectResourcePath;
+    [Min(0.01f)]
+    [SerializeField] private float explosionEffectScale = 1f;
+    [Header("Visual")]
+    [SerializeField] private GameObject projectileVisualPrefab;
+    [SerializeField] private string projectileVisualResourcePath;
 
     public EquipmentAttackMode AttackMode => attackMode;
     public float ShotsPerSecondOverride => shotsPerSecondOverride;
@@ -25,6 +40,15 @@ public class EquipmentAttackSettings
     public float ProjectileSpeed => projectileSpeed;
     public float ProjectileRadius => projectileRadius;
     public float ProjectileLifeTime => projectileLifeTime;
+    public float ProjectileGravity => projectileGravity;
+    public float ExplosionRadius => explosionRadius;
+    public float SplashMinimumDamageMultiplier => splashMinimumDamageMultiplier;
+    public float SelfSplashDamageMultiplier => selfSplashDamageMultiplier;
+    public GameObject ExplosionEffectPrefab => explosionEffectPrefab;
+    public string ExplosionEffectResourcePath => explosionEffectResourcePath;
+    public float ExplosionEffectScale => explosionEffectScale;
+    public GameObject ProjectileVisualPrefab => projectileVisualPrefab;
+    public string ProjectileVisualResourcePath => projectileVisualResourcePath;
 }
 
 [Serializable]
