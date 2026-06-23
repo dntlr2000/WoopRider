@@ -12,6 +12,15 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultAttackUpEffectResourcePath = "Effects/CustomEffects/AttackUp";
     private const string DefaultDefenceUpEffectResourcePath = "Effects/CustomEffects/DefenceUp";
     private const string DefaultBoxHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Stones hit";
+    private const string DefaultBombBoxExplosionEffectResourcePath = "Effects/CustomEffects/Item_ExplosionA Variant";
+    private const string DefaultFinalMatchRuleResourcesPath = "FinalMatchRules";
+    private const string DefaultFinalMatchRuleId = "break_statues";
+    private const int DefaultFinalObjectiveSlotIndex = 1000;
+    private const int DefaultFinalStatueBoxCount = 6;
+    private const int DefaultFinalStatueBoxSlotIdBase = 9000;
+    private const float DefaultFinalStatueRespawnDelay = 2f;
+    private const float DefaultFinalStatueMaxHealth = 100f;
+    private const string DefaultFinalStatueBoxId = "basic_stat_box";
     private static readonly PlayerStatType[] OrderedStatPickupTypes =
     {
         PlayerStatType.AttackPower,
@@ -47,7 +56,8 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         Stat = 0,
         Functional = 1,
-        Equipment = 2
+        Equipment = 2,
+        Bomb = 3
     }
 
     [System.Serializable]
@@ -103,6 +113,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private class BoxSlot
     {
         public bool Active;
+        public bool FinalScoreBox;
         public string BoxId;
         public BoxLootKind LootKind;
         public float CurrentHealth;
@@ -152,6 +163,86 @@ public class GameplayPickupManager : NetworkBehaviour
             SlotId = slotId;
             TargetClientId = targetClientId;
             Point = point;
+        }
+    }
+
+    private interface IFinalMatchRuleHandler
+    {
+        FinalMatchRuleType RuleType { get; }
+        void Start(FinalMatchRuleDefinition definition);
+        void ResolveOnTimer();
+        bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot);
+        void Stop();
+    }
+
+    private sealed class FirstObjectivePickupFinalRuleHandler : IFinalMatchRuleHandler
+    {
+        private readonly GameplayPickupManager manager;
+
+        public FirstObjectivePickupFinalRuleHandler(GameplayPickupManager manager)
+        {
+            this.manager = manager;
+        }
+
+        public FinalMatchRuleType RuleType => FinalMatchRuleType.FirstObjectivePickup;
+
+        public void Start(FinalMatchRuleDefinition definition)
+        {
+            manager.SpawnFinalObjective(manager.ResolveFinalObjectiveSlotIndex(definition));
+        }
+
+        public void ResolveOnTimer()
+        {
+        }
+
+        public bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot)
+        {
+            return false;
+        }
+
+        public void Stop()
+        {
+        }
+    }
+
+    private sealed class BreakStatuesFinalRuleHandler : IFinalMatchRuleHandler
+    {
+        private readonly GameplayPickupManager manager;
+        private FinalMatchRuleDefinition activeDefinition;
+
+        public BreakStatuesFinalRuleHandler(GameplayPickupManager manager)
+        {
+            this.manager = manager;
+        }
+
+        public FinalMatchRuleType RuleType => FinalMatchRuleType.BreakStatues;
+
+        public void Start(FinalMatchRuleDefinition definition)
+        {
+            activeDefinition = definition;
+            manager.ResetFinalStatueBreakScores();
+            manager.SpawnFinalStatueBreakBoxes(activeDefinition);
+        }
+
+        public void ResolveOnTimer()
+        {
+            manager.CompleteFinalStatueBreakObjective(activeDefinition);
+        }
+
+        public bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot)
+        {
+            if (slot == null || !slot.FinalScoreBox)
+            {
+                return false;
+            }
+
+            manager.BreakFinalStatueBox(slotId, attackerClientId, activeDefinition);
+            return true;
+        }
+
+        public void Stop()
+        {
+            activeDefinition = null;
         }
     }
 
@@ -237,6 +328,10 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private float basicBoxFullBreakThreshold = 0.33f;
     [SerializeField] private float basicBoxMaxHealth = 100f;
     [SerializeField] private int basicBoxLootCount = 3;
+    [SerializeField] private LayerMask boxGroundMask = ~0;
+    [SerializeField] private float boxGroundOffset = 0f;
+    [SerializeField] private float boxGroundRaycastHeight = 4f;
+    [SerializeField] private float boxGroundRaycastDistance = 10f;
     [SerializeField] private BoxVariantDefinition[] boxVariants =
     {
         new()
@@ -268,6 +363,16 @@ public class GameplayPickupManager : NetworkBehaviour
             MaxHealth = 140f,
             SpawnWeight = 0.25f,
             TintColor = new Color(0.25f, 0.8f, 1f)
+        },
+        new()
+        {
+            BoxId = "bomb_box",
+            DisplayName = "Bomb Box",
+            LootKind = BoxLootKind.Bomb,
+            LootCount = 0,
+            MaxHealth = 50f,
+            SpawnWeight = 0.25f,
+            TintColor = new Color(0.04f, 0.04f, 0.04f)
         }
     };
 
@@ -278,8 +383,25 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private float boxHitEffectScale = 1f;
     [SerializeField] private float boxHitEffectLifetime = 2f;
 
+    [Header("Bomb Box")]
+    [SerializeField] private float bombBoxExplosionRadius = 2f;
+    [SerializeField] private float bombBoxExplosionDamage = 100f;
+    [Range(0f, 1f)]
+    [SerializeField] private float bombBoxExplosionMinimumDamageMultiplier = 0.4f;
+    [Range(0f, 1f)]
+    [SerializeField] private float bombBoxExplosionSelfDamageMultiplier = 1f;
+    [SerializeField] private GameObject bombBoxExplosionEffectPrefab;
+    [SerializeField] private string bombBoxExplosionEffectResourcePath = DefaultBombBoxExplosionEffectResourcePath;
+    [SerializeField] private Vector3 bombBoxExplosionEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float bombBoxExplosionEffectScale = 1f;
+    [SerializeField] private float bombBoxExplosionEffectLifetime = 3f;
+
     [Header("Final Match Objective")]
-    [SerializeField] private int finalObjectiveSlotIndex = 1000;
+    [SerializeField] private FinalMatchRuleDefinition finalMatchRuleDefinition;
+    [SerializeField] private string selectedFinalMatchRuleId = DefaultFinalMatchRuleId;
+    [SerializeField] private bool loadFinalMatchRuleDefinitionsFromResources = true;
+    [SerializeField] private string finalMatchRuleResourcesPath = DefaultFinalMatchRuleResourcesPath;
 
     [Header("Spawn Area")]
     [SerializeField] private Vector2 xRange = new(-18f, 18f);
@@ -341,6 +463,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private readonly Dictionary<int, PickupSlot> slots = new();
     private readonly Dictionary<int, BoxSlot> boxSlots = new();
+    private readonly Dictionary<ulong, int> finalStatueBreakScores = new();
     private readonly Dictionary<ulong, float> nextHookRequestTimes = new();
     private PlayerStatsState statsState;
     private MatchStateController matchStateController;
@@ -350,6 +473,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private int nextLootPickupSlotId;
     private Coroutine suddenEventRoutine;
     private SuddenEventType activeSuddenEvent = SuddenEventType.None;
+    private FinalMatchRuleDefinition activeFinalMatchRuleDefinition;
+    private IFinalMatchRuleHandler activeFinalMatchRuleHandler;
     private float activeSuddenEventEndTime;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
     private GameObject resolvedDefaultStatBuffEffectPrefab;
@@ -357,6 +482,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private GameObject resolvedDefaultAttackUpEffectPrefab;
     private GameObject resolvedDefaultDefenceUpEffectPrefab;
     private GameObject resolvedDefaultBoxHitEffectPrefab;
+    private GameObject resolvedDefaultBombBoxExplosionEffectPrefab;
     private Texture2D resolvedBasicBoxCleanTexture;
     private Texture2D resolvedBasicBoxHalfBreakTexture;
     private Texture2D resolvedBasicBoxFullBreakTexture;
@@ -369,6 +495,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private bool triedLoadDefaultAttackUpEffectPrefab;
     private bool triedLoadDefaultDefenceUpEffectPrefab;
     private bool triedLoadDefaultBoxHitEffectPrefab;
+    private bool triedLoadDefaultBombBoxExplosionEffectPrefab;
     private bool triedLoadBasicBoxTextures;
     private bool triedLoadStatPickupVisualPrefab;
     private bool warnedMissingStatPickupMaterial;
@@ -466,14 +593,18 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             case NetworkMatchState.Lobby:
                 StopSuddenEventSchedule();
+                StopFinalMatchObjective();
                 ClearAllPickups();
                 ClearAllBoxItems();
+                ResetFinalStatueBreakScores();
                 statsState?.ResetStats();
                 break;
             case NetworkMatchState.MatchMain:
                 StopSuddenEventSchedule();
+                StopFinalMatchObjective();
                 ClearAllPickups();
                 ClearAllBoxItems();
+                ResetFinalStatueBreakScores();
                 NetworkPlayerEquipmentState.EquipDefaultForAll();
                 NetworkPlayerCombatState.ResetForMatchStartForAll();
                 statsState?.ResetStats();
@@ -484,19 +615,22 @@ public class GameplayPickupManager : NetworkBehaviour
                 break;
             case NetworkMatchState.FinalTransition:
                 StopSuddenEventSchedule();
+                StopFinalMatchObjective();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 break;
             case NetworkMatchState.FinalMatch:
                 StopSuddenEventSchedule();
+                StopFinalMatchObjective();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
                 NetworkPlayerCombatState.ResetForMatchStartForAll();
-                SpawnFinalObjective();
+                StartFinalMatchObjective();
                 break;
             case NetworkMatchState.Result:
                 StopSuddenEventSchedule();
+                StopFinalMatchObjective();
                 ClearAllPickups();
                 ClearAllBoxItems();
                 break;
@@ -798,11 +932,226 @@ public class GameplayPickupManager : NetworkBehaviour
         ActivateRandomContactPickup(slotId, position);
     }
 
-    private void SpawnFinalObjective()
+    private void SpawnFinalObjective(int slotId)
     {
         // 최종전 승리 조건인 단일 목표 아이템을 필드에 배치.
-        ActivateFinalObjective(finalObjectiveSlotIndex, GetRandomSpawnPosition());
+        ActivateFinalObjective(slotId, GetRandomSpawnPosition());
         Debug.Log("[GameplayPickupManager] Final objective spawned.");
+    }
+
+    private void StartFinalMatchObjective()
+    {
+        // Resolve data from ScriptableObject, then let the matching handler own the runtime behavior.
+        activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
+        activeFinalMatchRuleHandler = CreateFinalMatchRuleHandler(activeFinalMatchRuleDefinition);
+        activeFinalMatchRuleHandler.Start(activeFinalMatchRuleDefinition);
+
+        string ruleId = activeFinalMatchRuleDefinition != null ? activeFinalMatchRuleDefinition.RuleId : "fallback";
+        Debug.Log($"[GameplayPickupManager] Final match objective started rule={activeFinalMatchRuleHandler.RuleType} ruleId={ruleId}");
+    }
+
+    public void ResolveFinalMatchOnTimer()
+    {
+        // Let timed final objectives finish their own scoring immediately before the Result state begins.
+        if (!IsServer || matchStateController == null || matchStateController.State.Value != NetworkMatchState.FinalMatch)
+        {
+            return;
+        }
+
+        activeFinalMatchRuleHandler?.ResolveOnTimer();
+    }
+
+    private void StopFinalMatchObjective()
+    {
+        // Drop references to the active final rule runner when leaving final-match flow.
+        activeFinalMatchRuleHandler?.Stop();
+        activeFinalMatchRuleHandler = null;
+        activeFinalMatchRuleDefinition = null;
+    }
+
+    public float ResolveFinalMatchDuration(float fallbackDuration)
+    {
+        // MatchStateController asks this before entering final match so rule assets can tune duration.
+        FinalMatchRuleDefinition definition = ResolveFinalMatchRuleDefinition();
+        return definition != null ? definition.ResolveDuration(fallbackDuration) : Mathf.Max(0f, fallbackDuration);
+    }
+
+    private void SpawnFinalStatueBreakBoxes(FinalMatchRuleDefinition definition)
+    {
+        // Spawn score-only statue boxes. They use the normal box visuals but never drop loot.
+        int count = ResolveFinalStatueBoxCount(definition);
+        int slotIdBase = ResolveFinalStatueBoxSlotIdBase(definition);
+        for (int i = 0; i < count; i++)
+        {
+            ActivateFinalStatueBreakBox(slotIdBase + i, GetRandomSpawnPosition(), definition);
+        }
+
+        Debug.Log($"[GameplayPickupManager] Final statue boxes spawned count={count}");
+    }
+
+    private void ActivateFinalStatueBreakBox(int slotId, Vector3 position, FinalMatchRuleDefinition definition)
+    {
+        // Score boxes share the basic box presentation and health tuning, but are marked as no-loot objectives.
+        ActivateBoxItem(slotId, position, CreateFinalStatueBoxVariant(definition), finalScoreBox: true, startTimedDespawn: false);
+    }
+
+    private BoxVariantDefinition CreateFinalStatueBoxVariant(FinalMatchRuleDefinition definition)
+    {
+        // Keep the final objective statue visually identical to the existing basic box by reusing the same id.
+        return new BoxVariantDefinition
+        {
+            BoxId = ResolveFinalStatueBoxId(definition),
+            DisplayName = "Final Statue Box",
+            LootKind = BoxLootKind.Stat,
+            LootCount = 0,
+            MaxHealth = ResolveFinalStatueMaxHealth(definition),
+            SpawnWeight = 1f,
+            TintColor = ResolveFinalStatueTintColor(definition)
+        };
+    }
+
+    private FinalMatchRuleDefinition ResolveFinalMatchRuleDefinition()
+    {
+        // Prefer an explicitly assigned asset, otherwise load the selected rule id from Resources.
+        if (finalMatchRuleDefinition != null)
+        {
+            return finalMatchRuleDefinition;
+        }
+
+        List<FinalMatchRuleDefinition> definitions = ResolveFinalMatchRuleDefinitions();
+        if (definitions.Count == 0)
+        {
+            return null;
+        }
+
+        string selectedRuleId = string.IsNullOrWhiteSpace(selectedFinalMatchRuleId)
+            ? DefaultFinalMatchRuleId
+            : selectedFinalMatchRuleId;
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            FinalMatchRuleDefinition definition = definitions[i];
+            if (definition != null && definition.RuleId == selectedRuleId)
+            {
+                return definition;
+            }
+        }
+
+        return ChooseWeightedFinalMatchRuleDefinition(definitions);
+    }
+
+    private List<FinalMatchRuleDefinition> ResolveFinalMatchRuleDefinitions()
+    {
+        // Load final rule definitions from Resources so adding rules does not require scene edits.
+        List<FinalMatchRuleDefinition> definitions = new();
+        if (loadFinalMatchRuleDefinitionsFromResources)
+        {
+            string resourcesPath = string.IsNullOrWhiteSpace(finalMatchRuleResourcesPath)
+                ? DefaultFinalMatchRuleResourcesPath
+                : finalMatchRuleResourcesPath;
+            definitions.AddRange(Resources.LoadAll<FinalMatchRuleDefinition>(resourcesPath));
+        }
+
+        return definitions;
+    }
+
+    private static FinalMatchRuleDefinition ChooseWeightedFinalMatchRuleDefinition(List<FinalMatchRuleDefinition> definitions)
+    {
+        // Fallback selection keeps future random final-rule rotation data-driven.
+        float totalWeight = 0f;
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            FinalMatchRuleDefinition definition = definitions[i];
+            if (IsUsableFinalMatchRuleDefinition(definition))
+            {
+                totalWeight += Mathf.Max(0f, definition.SelectionWeight);
+            }
+        }
+
+        if (totalWeight <= 0f)
+        {
+            return null;
+        }
+
+        float roll = Random.Range(0f, totalWeight);
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            FinalMatchRuleDefinition definition = definitions[i];
+            if (!IsUsableFinalMatchRuleDefinition(definition))
+            {
+                continue;
+            }
+
+            roll -= Mathf.Max(0f, definition.SelectionWeight);
+            if (roll <= 0f)
+            {
+                return definition;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsUsableFinalMatchRuleDefinition(FinalMatchRuleDefinition definition)
+    {
+        // Resource-loaded definitions can be disabled without deleting the asset.
+        return definition != null &&
+            definition.EnabledInPool &&
+            definition.SelectionWeight > 0f;
+    }
+
+    private IFinalMatchRuleHandler CreateFinalMatchRuleHandler(FinalMatchRuleDefinition definition)
+    {
+        // Keep runtime logic in handlers and data in ScriptableObjects.
+        FinalMatchRuleType ruleType = definition != null
+            ? definition.RuleType
+            : FinalMatchRuleType.FirstObjectivePickup;
+        return ruleType switch
+        {
+            FinalMatchRuleType.BreakStatues => new BreakStatuesFinalRuleHandler(this),
+            _ => new FirstObjectivePickupFinalRuleHandler(this)
+        };
+    }
+
+    private int ResolveFinalObjectiveSlotIndex(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.ObjectiveSlotIndex : DefaultFinalObjectiveSlotIndex;
+    }
+
+    private int ResolveFinalStatueBoxCount(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueBoxCount : DefaultFinalStatueBoxCount;
+    }
+
+    private int ResolveFinalStatueBoxSlotIdBase(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueBoxSlotIdBase : DefaultFinalStatueBoxSlotIdBase;
+    }
+
+    private float ResolveFinalStatueRespawnDelay(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueRespawnDelay : DefaultFinalStatueRespawnDelay;
+    }
+
+    private float ResolveFinalStatueMaxHealth(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueMaxHealth : Mathf.Max(1f, DefaultFinalStatueMaxHealth);
+    }
+
+    private string ResolveFinalStatueBoxId(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueBoxId : DefaultFinalStatueBoxId;
+    }
+
+    private Color ResolveFinalStatueTintColor(FinalMatchRuleDefinition definition)
+    {
+        return definition != null ? definition.StatueTintColor : Color.white;
+    }
+
+    private string ResolveFinalRuleContext(FinalMatchRuleDefinition definition)
+    {
+        return definition != null && !string.IsNullOrWhiteSpace(definition.RuleId)
+            ? definition.RuleId
+            : "final-rule";
     }
 
     private void ActivateStatPickup(int slotId, PlayerStatType statType, Vector3 position, bool respawnOnCollect = true)
@@ -902,19 +1251,50 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void ActivateBoxItem(int slotId, Vector3 position, BoxVariantDefinition variant)
     {
+        // Default box activation keeps the existing main-match loot and timed despawn behavior.
+        ActivateBoxItem(slotId, position, variant, finalScoreBox: false, startTimedDespawn: true);
+    }
+
+    private void ActivateBoxItem(int slotId, Vector3 position, BoxVariantDefinition variant, bool finalScoreBox, bool startTimedDespawn)
+    {
         // Initialize a destructible box with variant-specific health, tint, and pre-rolled loot.
+        Vector3 resolvedPosition = ResolveBoxGroundedPosition(position);
         BoxVariantDefinition resolvedVariant = ResolveBoxVariant(variant);
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.Active = true;
+        slot.FinalScoreBox = finalScoreBox;
         slot.BoxId = resolvedVariant.BoxId;
         slot.LootKind = resolvedVariant.LootKind;
         slot.MaxHealth = Mathf.Max(1f, resolvedVariant.MaxHealth);
         slot.CurrentHealth = slot.MaxHealth;
         PreRollBoxLoot(slot, resolvedVariant);
-        slot.Position = position;
+        if (finalScoreBox)
+        {
+            slot.LootStats = System.Array.Empty<PlayerStatType>();
+            slot.LootFunctionalTypes = System.Array.Empty<FunctionalPickupType>();
+            slot.LootEquipmentIds = System.Array.Empty<string>();
+        }
 
-        SetBoxVisualClientRpc(slotId, true, position, 1f, new FixedString64Bytes(slot.BoxId));
-        StartBoxDespawnTimer(slotId);
+        slot.Position = resolvedPosition;
+
+        SetBoxVisualClientRpc(slotId, true, resolvedPosition, 1f, new FixedString64Bytes(slot.BoxId));
+        if (startTimedDespawn)
+        {
+            StartBoxDespawnTimer(slotId);
+        }
+    }
+
+    private Vector3 ResolveBoxGroundedPosition(Vector3 position)
+    {
+        // Snap static box spawns to the detected ground so shared pickup spawn height does not make boxes float.
+        Vector3 rayOrigin = position + Vector3.up * Mathf.Max(0f, boxGroundRaycastHeight);
+        float rayDistance = Mathf.Max(0.1f, boxGroundRaycastHeight + boxGroundRaycastDistance);
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, rayDistance, boxGroundMask, QueryTriggerInteraction.Ignore))
+        {
+            position.y = hit.point.y + boxGroundOffset;
+        }
+
+        return position;
     }
 
     private void DeactivateBoxItem(int slotId, bool stopDespawnTimer = true)
@@ -1823,7 +2203,11 @@ public class GameplayPickupManager : NetworkBehaviour
             return true;
         }
 
-        StartBoxDespawnTimer(slotId);
+        if (!slot.FinalScoreBox)
+        {
+            StartBoxDespawnTimer(slotId);
+        }
+
         return true;
     }
 
@@ -2020,6 +2404,18 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Convert a destroyed box into its pre-selected variant loot and schedule a replacement box.
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
+        if (activeFinalMatchRuleHandler != null &&
+            activeFinalMatchRuleHandler.TryHandleBoxBroken(slotId, attackerClientId, slot))
+        {
+            return;
+        }
+
+        if (slot.LootKind == BoxLootKind.Bomb)
+        {
+            BreakBombBoxItem(slotId, attackerClientId);
+            return;
+        }
+
         Vector3 dropCenter = slot.Position;
         BoxLootKind lootKind = slot.LootKind;
         PlayerStatType[] lootStats = slot.LootStats ?? System.Array.Empty<PlayerStatType>();
@@ -2038,6 +2434,124 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         Debug.Log($"[GameplayPickupManager] Box broken slot={slotId} attacker={attackerClientId} boxId={slot.BoxId} lootKind={lootKind} mixedLoot={useMixedLoot} lootCount={lootCount}");
+    }
+
+    private void BreakBombBoxItem(int slotId, ulong attackerClientId)
+    {
+        // Replace normal loot spilling with a server-authoritative player splash explosion.
+        BoxSlot slot = GetOrCreateBoxSlot(slotId);
+        Vector3 explosionCenter = ResolveBombBoxExplosionCenter(slot);
+        string boxId = slot.BoxId;
+
+        DeactivateBoxItem(slotId);
+        int playerHits = NetworkPlayerCombatState.ApplySplashDamage(
+            explosionCenter,
+            Mathf.Max(0.01f, bombBoxExplosionRadius),
+            Mathf.Max(0f, bombBoxExplosionDamage),
+            attackerClientId,
+            Mathf.Clamp01(bombBoxExplosionMinimumDamageMultiplier),
+            Mathf.Clamp01(bombBoxExplosionSelfDamageMultiplier));
+        PlayBombBoxExplosionEffectClientRpc(explosionCenter);
+
+        if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
+        {
+            slot.RespawnRoutine = StartCoroutine(RespawnBoxItemAfterDelay(slotId));
+        }
+
+        Debug.Log($"[GameplayPickupManager] Bomb box exploded slot={slotId} attacker={attackerClientId} boxId={boxId} radius={bombBoxExplosionRadius:0.0} damage={bombBoxExplosionDamage:0.0} playerHits={playerHits}");
+    }
+
+    private Vector3 ResolveBombBoxExplosionCenter(BoxSlot slot)
+    {
+        // Place the explosion around the visible center of the statue rather than its ground point.
+        return slot != null
+            ? slot.Position + Vector3.up * Mathf.Max(0f, boxTargetHeight * 0.5f)
+            : Vector3.zero;
+    }
+
+    private void BreakFinalStatueBox(int slotId, ulong attackerClientId, FinalMatchRuleDefinition definition)
+    {
+        // Final objective statues award one point to the breaker and never drop field loot.
+        BoxSlot slot = GetOrCreateBoxSlot(slotId);
+        RegisterFinalStatueBreakScore(attackerClientId);
+        DeactivateBoxItem(slotId);
+
+        if (matchStateController != null && matchStateController.State.Value == NetworkMatchState.FinalMatch)
+        {
+            slot.RespawnRoutine = StartCoroutine(RespawnFinalStatueBoxAfterDelay(slotId, definition));
+        }
+
+        int score = finalStatueBreakScores.TryGetValue(attackerClientId, out int currentScore) ? currentScore : 0;
+        Debug.Log($"[GameplayPickupManager] Final statue broken slot={slotId} attacker={attackerClientId} score={score}");
+    }
+
+    private IEnumerator RespawnFinalStatueBoxAfterDelay(int slotId, FinalMatchRuleDefinition definition)
+    {
+        // Keep the timed statue-breaking objective supplied with targets until the final timer ends.
+        yield return new WaitForSeconds(ResolveFinalStatueRespawnDelay(definition));
+
+        if (!IsServer ||
+            matchStateController == null ||
+            matchStateController.State.Value != NetworkMatchState.FinalMatch ||
+            activeFinalMatchRuleHandler == null ||
+            activeFinalMatchRuleHandler.RuleType != FinalMatchRuleType.BreakStatues)
+        {
+            yield break;
+        }
+
+        BoxSlot slot = GetOrCreateBoxSlot(slotId);
+        slot.RespawnRoutine = null;
+        ActivateFinalStatueBreakBox(slotId, GetRandomSpawnPosition(), definition);
+    }
+
+    private void ResetFinalStatueBreakScores()
+    {
+        // Clear score state for the timed statue-breaking final objective.
+        finalStatueBreakScores.Clear();
+        if (!IsServer || NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
+        {
+            EnsureFinalStatueScoreEntry(clientId);
+        }
+    }
+
+    private void RegisterFinalStatueBreakScore(ulong clientId)
+    {
+        // Award one objective point to the player who destroyed a final statue.
+        EnsureFinalStatueScoreEntry(clientId);
+        finalStatueBreakScores[clientId]++;
+    }
+
+    private void EnsureFinalStatueScoreEntry(ulong clientId)
+    {
+        // Include zero-score players so timeout resolution can detect ties cleanly.
+        if (!finalStatueBreakScores.ContainsKey(clientId))
+        {
+            finalStatueBreakScores.Add(clientId, 0);
+        }
+    }
+
+    private void CompleteFinalStatueBreakObjective(FinalMatchRuleDefinition definition)
+    {
+        // Resolve the winner from final statue scores when the final timer reaches zero.
+        if (!IsServer || matchStateController == null)
+        {
+            return;
+        }
+
+        if (NetworkManager.Singleton != null)
+        {
+            foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
+            {
+                EnsureFinalStatueScoreEntry(clientId);
+            }
+        }
+
+        matchStateController.CompleteFinalScoreObjective(finalStatueBreakScores, ResolveFinalRuleContext(definition));
     }
 
     private IEnumerator RespawnBoxItemAfterDelay(int slotId)
@@ -2062,6 +2576,7 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             BoxLootKind.Functional => DropFunctionalBoxLoot(dropCenter, lootFunctionalTypes),
             BoxLootKind.Equipment => DropEquipmentBoxLoot(dropCenter, lootEquipmentIds),
+            BoxLootKind.Bomb => 0,
             _ => DropStatBoxLoot(dropCenter, lootStats)
         };
     }
@@ -2302,6 +2817,8 @@ public class GameplayPickupManager : NetworkBehaviour
                 break;
             case BoxLootKind.Equipment:
                 slot.LootEquipmentIds = GenerateEquipmentLoot(lootCount);
+                break;
+            case BoxLootKind.Bomb:
                 break;
             default:
                 slot.LootStats = GenerateStatLoot(lootCount);
@@ -3048,6 +3565,13 @@ public class GameplayPickupManager : NetworkBehaviour
         PlayBoxHitOneShotEffect(ResolveBoxHitEffectPrefab(), position);
     }
 
+    [ClientRpc]
+    private void PlayBombBoxExplosionEffectClientRpc(Vector3 position)
+    {
+        // Spawn the bomb box explosion VFX on every client after the server resolves damage.
+        PlayBombBoxExplosionOneShotEffect(ResolveBombBoxExplosionEffectPrefab(), position);
+    }
+
     private void PlayPickupOneShotEffect(GameObject effectPrefab, Vector3 position, string effectName)
     {
         // Instantiate a temporary pickup effect, force particle systems to play once, and clean it up.
@@ -3110,6 +3634,38 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         Destroy(effectObject, Mathf.Max(0.1f, boxHitEffectLifetime));
+    }
+
+    private void PlayBombBoxExplosionOneShotEffect(GameObject effectPrefab, Vector3 position)
+    {
+        // Instantiate the bomb explosion effect, force child particles to play once, and clean it up.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(bombBoxExplosionEffectEulerOffset));
+        effectObject.name = "BombBoxExplosionEffect";
+        effectObject.transform.localScale *= Mathf.Max(0.01f, bombBoxExplosionEffectScale);
+        effectObject.SetActive(true);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, bombBoxExplosionEffectLifetime));
     }
 
     private GameObject ResolvePickupEffectPrefab(PickupEffectKind effectKind)
@@ -3209,6 +3765,31 @@ public class GameplayPickupManager : NetworkBehaviour
         return resolvedDefaultBoxHitEffectPrefab;
     }
 
+    private GameObject ResolveBombBoxExplosionEffectPrefab()
+    {
+        // Use an assigned explosion VFX first, then fall back to the CustomEffects resource prefab.
+        if (bombBoxExplosionEffectPrefab != null)
+        {
+            return bombBoxExplosionEffectPrefab;
+        }
+
+        if (!triedLoadDefaultBombBoxExplosionEffectPrefab)
+        {
+            triedLoadDefaultBombBoxExplosionEffectPrefab = true;
+            string resourcePath = string.IsNullOrWhiteSpace(bombBoxExplosionEffectResourcePath)
+                ? DefaultBombBoxExplosionEffectResourcePath
+                : bombBoxExplosionEffectResourcePath.Trim();
+            resolvedDefaultBombBoxExplosionEffectPrefab = Resources.Load<GameObject>(resourcePath);
+            if (resolvedDefaultBombBoxExplosionEffectPrefab == null &&
+                resourcePath != DefaultBombBoxExplosionEffectResourcePath)
+            {
+                resolvedDefaultBombBoxExplosionEffectPrefab = Resources.Load<GameObject>(DefaultBombBoxExplosionEffectResourcePath);
+            }
+        }
+
+        return resolvedDefaultBombBoxExplosionEffectPrefab;
+    }
+
     private void CreateLocalVisualSlots()
     {
         // 클라이언트별 임시 Primitive 비주얼을 미리 만들어 RPC 표시 요청에 대비.
@@ -3217,6 +3798,7 @@ public class GameplayPickupManager : NetworkBehaviour
             EnsureVisual(i, GetOrCreateSlot(i));
         }
 
+        int finalObjectiveSlotIndex = ResolveFinalObjectiveSlotIndex(ResolveFinalMatchRuleDefinition());
         PickupSlot finalSlot = GetOrCreateSlot(finalObjectiveSlotIndex);
         finalSlot.Kind = PickupKind.FinalObjective;
         EnsureVisual(finalObjectiveSlotIndex, finalSlot);

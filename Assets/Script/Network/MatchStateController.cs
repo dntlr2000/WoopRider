@@ -41,6 +41,8 @@ public class MatchStateController : NetworkBehaviour
     private int lastLoggedRemainingSecond = -1;
     private bool isDisbandingRoom;
 
+    public NetworkList<ulong> FinalWinnerClientIds { get; private set; }
+
     private void Awake()
     {
         // 경기 상태 컨트롤러를 전역에서 참조할 수 있도록 싱글턴을 설정.
@@ -51,7 +53,19 @@ public class MatchStateController : NetworkBehaviour
         }
 
         Instance = this;
+        FinalWinnerClientIds = new NetworkList<ulong>();
         Debug.Log("[MatchStateController] Awake completed.");
+    }
+
+    public override void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+
+        FinalWinnerClientIds?.Dispose();
+        base.OnDestroy();
     }
 
     public override void OnNetworkSpawn()
@@ -297,13 +311,88 @@ public class MatchStateController : NetworkBehaviour
             return;
         }
 
-        if (FinalWinnerClientId.Value != NoWinnerClientId)
+        if (HasFinalWinners())
         {
             return;
         }
 
-        FinalWinnerClientId.Value = clientId;
+        SetFinalWinners(new[] { clientId }, "FirstObjective");
         SetState(NetworkMatchState.Result, 0f);
+    }
+
+    public void CompleteFinalScoreObjective(IReadOnlyDictionary<ulong, int> scores, string context)
+    {
+        // Resolve a timed final match whose winner is decided by score instead of instant completion.
+        if (!IsServer || State.Value != NetworkMatchState.FinalMatch || scores == null)
+        {
+            return;
+        }
+
+        if (HasFinalWinners())
+        {
+            return;
+        }
+
+        List<ulong> winners = ResolveWinners(scores);
+        foreach (KeyValuePair<ulong, int> pair in scores)
+        {
+            Debug.Log($"[MatchStateController] Final score context={context} clientId={pair.Key} score={pair.Value}");
+        }
+
+        if (winners.Count > 0)
+        {
+            SetFinalWinners(winners, context);
+            return;
+        }
+
+        Debug.Log($"[MatchStateController] Final score winner unresolved context={context} reason=no-valid-winner contenders=0");
+    }
+
+    private void SetFinalWinners(IEnumerable<ulong> winners, string context)
+    {
+        // Store every winner so tied final matches are treated as shared victories.
+        FinalWinnerClientIds.Clear();
+        foreach (ulong winnerClientId in winners)
+        {
+            if (!FinalWinnerClientIds.Contains(winnerClientId))
+            {
+                FinalWinnerClientIds.Add(winnerClientId);
+            }
+        }
+
+        FinalWinnerClientId.Value = FinalWinnerClientIds.Count > 0
+            ? FinalWinnerClientIds[0]
+            : NoWinnerClientId;
+
+        if (FinalWinnerClientIds.Count == 1)
+        {
+            Debug.Log($"[MatchStateController] Final winner context={context} clientId={FinalWinnerClientIds[0]}");
+            return;
+        }
+
+        Debug.Log($"[MatchStateController] Final shared winners context={context} clientIds={FormatFinalWinnerClientIds()}");
+    }
+
+    private bool HasFinalWinners()
+    {
+        return (FinalWinnerClientIds != null && FinalWinnerClientIds.Count > 0) ||
+            FinalWinnerClientId.Value != NoWinnerClientId;
+    }
+
+    private string FormatFinalWinnerClientIds()
+    {
+        if (FinalWinnerClientIds == null || FinalWinnerClientIds.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        List<string> ids = new(FinalWinnerClientIds.Count);
+        for (int i = 0; i < FinalWinnerClientIds.Count; i++)
+        {
+            ids.Add(FinalWinnerClientIds[i].ToString());
+        }
+
+        return string.Join(",", ids);
     }
 
     public void ShowNoticeToClient(ulong clientId, string message, float duration = 4f)
@@ -352,9 +441,10 @@ public class MatchStateController : NetworkBehaviour
                 SetState(NetworkMatchState.FinalTransition, finalTransitionDuration);
                 break;
             case NetworkMatchState.FinalTransition:
-                SetState(NetworkMatchState.FinalMatch, finalMatchDuration);
+                SetState(NetworkMatchState.FinalMatch, ResolveFinalMatchDuration());
                 break;
             case NetworkMatchState.FinalMatch:
+                GameplayPickupManager.Instance?.ResolveFinalMatchOnTimer();
                 SetState(NetworkMatchState.Result, 0f);
                 break;
             default:
@@ -377,6 +467,15 @@ public class MatchStateController : NetworkBehaviour
         {
             LogFinalResult();
         }
+    }
+
+    private float ResolveFinalMatchDuration()
+    {
+        // Allow the selected final match rule asset to override the room-level final duration.
+        GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+        return pickupManager != null
+            ? pickupManager.ResolveFinalMatchDuration(finalMatchDuration)
+            : finalMatchDuration;
     }
 
     private void DisbandDedicatedServerRoom()
@@ -404,6 +503,7 @@ public class MatchStateController : NetworkBehaviour
         defeatedByDisconnect.Clear();
         pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
+        FinalWinnerClientIds?.Clear();
         lastLoggedRemainingSecond = -1;
     }
 
@@ -413,6 +513,7 @@ public class MatchStateController : NetworkBehaviour
         defeatedByDisconnect.Clear();
         pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
+        FinalWinnerClientIds?.Clear();
         RemainingTime.Value = 0f;
         lastLoggedRemainingSecond = -1;
     }
@@ -433,13 +534,13 @@ public class MatchStateController : NetworkBehaviour
     private void LogFinalResult()
     {
         // 결과 상태 진입 시 최종 우승자만 서버 로그에 출력.
-        if (FinalWinnerClientId.Value == NoWinnerClientId)
+        if (!HasFinalWinners())
         {
             Debug.Log("[MatchStateController] Result finalWinnerClientId=None");
             return;
         }
 
-        Debug.Log($"[MatchStateController] Result finalWinnerClientId={FinalWinnerClientId.Value}");
+        Debug.Log($"[MatchStateController] Result finalWinnerClientIds={FormatFinalWinnerClientIds()}");
     }
 
     private IEnumerator CompleteDedicatedDisbandAfterCallbacks()

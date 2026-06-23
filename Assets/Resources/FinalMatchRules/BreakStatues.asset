@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f4c8730b0cf14e64b8c07969b695f204, type: 3}
+  m_Name: BreakStatues
+  m_EditorClassIdentifier: 
+  ruleId: break_statues
+  ruleType: 1
+  displayName: Break Statues
+  noticeTitle: Break as many statues as possible!
+  enabledInPool: 1
+  selectionWeight: 1
+  durationOverride: 0
+  objectiveSlotIndex: 1000
+  statueBoxCount: 6
+  statueBoxSlotIdBase: 9000
+  statueRespawnDelay: 2
+  statueMaxHealth: 100
+  statueBoxId: basic_stat_box
+  statueTintColor: {r: 1, g: 1, b: 1, a: 1}

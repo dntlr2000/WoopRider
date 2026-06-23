@@ -5132,6 +5132,12 @@ MonoBehaviour:
   basicBoxFullBreakThreshold: 0.33
   basicBoxMaxHealth: 100
   basicBoxLootCount: 3
+  boxGroundMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  boxGroundOffset: 0
+  boxGroundRaycastHeight: 4
+  boxGroundRaycastDistance: 10
   boxVariants:
   - BoxId: basic_stat_box
     DisplayName: Basic Stat Box
@@ -5154,10 +5160,26 @@ MonoBehaviour:
     MaxHealth: 140
     SpawnWeight: 0.25
     TintColor: {r: 0.56289303, g: 0.8832856, b: 1, a: 1}
+  - BoxId: bomb_box
+    DisplayName: Bomb Box
+    LootKind: 3
+    LootCount: 0
+    MaxHealth: 50
+    SpawnWeight: 0.25
+    TintColor: {r: 0.04, g: 0.04, b: 0.04, a: 1}
   boxHitEffectPrefab: {fileID: 0}
   boxHitEffectEulerOffset: {x: 0, y: 0, z: 0}
   boxHitEffectScale: 1
   boxHitEffectLifetime: 2
+  bombBoxExplosionRadius: 2
+  bombBoxExplosionDamage: 100
+  bombBoxExplosionMinimumDamageMultiplier: 0.4
+  bombBoxExplosionSelfDamageMultiplier: 1
+  bombBoxExplosionEffectPrefab: {fileID: 0}
+  bombBoxExplosionEffectResourcePath: Effects/CustomEffects/Item_ExplosionA Variant
+  bombBoxExplosionEffectEulerOffset: {x: 0, y: 0, z: 0}
+  bombBoxExplosionEffectScale: 1
+  bombBoxExplosionEffectLifetime: 3
   finalObjectiveSlotIndex: 1000
   xRange: {x: -18, y: 18}
   zRange: {x: -18, y: 18}
