@@ -68,7 +68,7 @@ public static class GameConfigStore
 
     private static void ApplyMasterVolume(float value)
     {
-        // Use AudioListener volume as a lightweight placeholder until a full audio mixer exists.
-        AudioListener.volume = Mathf.Clamp01(value);
+        // Route master volume changes through SoundManager while preserving a no-manager fallback.
+        SoundManager.ApplyGlobalMasterVolume(value);
     }
 }

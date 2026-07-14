@@ -658,6 +658,13 @@ public class GameplayPickupManager : NetworkBehaviour
             suddenEventRoutine = null;
         }
 
+        bool shouldLetMatchStateFadeAudio = matchStateController != null &&
+            matchStateController.State.Value == NetworkMatchState.FinalTransition;
+        if (IsServer && activeSuddenEvent != SuddenEventType.None && !shouldLetMatchStateFadeAudio)
+        {
+            StopSuddenEventBgmClientRpc(revealBaseBgm: false);
+        }
+
         activeSuddenEvent = SuddenEventType.None;
         activeSuddenEventEndTime = 0f;
     }
@@ -826,6 +833,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         string title = ResolveSuddenEventTitle(selection);
         matchStateController?.ShowNoticeToAll(title, 4f);
+        PlaySuddenEventBgmClientRpc(eventKind);
         Debug.Log($"[GameplayPickupManager] Sudden event started kind={eventKind} duration={duration:0.0}s title={title}");
         UpdateActiveSuddenEvent();
     }
@@ -903,6 +911,9 @@ public class GameplayPickupManager : NetworkBehaviour
         if (activeSuddenEvent != SuddenEventType.None)
         {
             Debug.Log($"[GameplayPickupManager] Sudden event ended kind={activeSuddenEvent}");
+            bool revealBaseBgm = matchStateController != null &&
+                matchStateController.State.Value == NetworkMatchState.MatchMain;
+            StopSuddenEventBgmClientRpc(revealBaseBgm);
         }
 
         activeSuddenEvent = SuddenEventType.None;
@@ -3435,6 +3446,25 @@ public class GameplayPickupManager : NetworkBehaviour
             float healthPercent = slot.MaxHealth > 0f ? Mathf.Clamp01(slot.CurrentHealth / slot.MaxHealth) : 0f;
             SetBoxVisualClientRpc(pair.Key, slot.Active, slot.Position, healthPercent, new FixedString64Bytes(slot.BoxId ?? string.Empty));
         }
+
+        if (activeSuddenEvent != SuddenEventType.None && IsSuddenEventActive())
+        {
+            PlaySuddenEventBgmClientRpc(activeSuddenEvent);
+        }
+    }
+
+    [ClientRpc]
+    private void PlaySuddenEventBgmClientRpc(SuddenEventType eventType)
+    {
+        // Tell every client to play the BGM override associated with the active sudden event.
+        SoundManager.Instance?.PlaySuddenEventBgm(eventType);
+    }
+
+    [ClientRpc]
+    private void StopSuddenEventBgmClientRpc(bool revealBaseBgm)
+    {
+        // Tell every client whether to reveal or keep hiding the underlying match BGM after an event ends.
+        SoundManager.Instance?.StopSuddenEventBgm(revealBaseBgm);
     }
 
     [ClientRpc]
