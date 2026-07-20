@@ -15,6 +15,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     private const float MaxProjectileRadius = 1f;
     private const float MinProjectileLifetime = 0.1f;
     private const float MaxProjectileLifetime = 10f;
+    private static ulong nextServerProjectileVisualId;
 
     [Header("Local Source")]
     [SerializeField] private float sendInterval = 0.05f;
@@ -110,10 +111,11 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 return false;
             }
 
-            StartServerProjectileDamage(packet, attackSettings);
+            ulong projectileVisualId = AllocateServerProjectileVisualId();
             ApplyAttackFacingFromProjectile(packet);
             PlayShootAnimationClientRpc(transform.rotation);
-            SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+            SpawnProjectileVisualClientRpc(projectileVisualId, packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+            StartServerProjectileDamage(projectileVisualId, packet, attackSettings);
             return true;
         }
 
@@ -184,16 +186,18 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 return false;
             }
 
-            StartServerCannonDamage(packet, attackSettings);
+            ulong projectileVisualId = AllocateServerProjectileVisualId();
             ApplyAttackFacingFromProjectile(packet);
             PlayShootAnimationClientRpc(transform.rotation);
             SpawnCannonProjectileVisualClientRpc(
+                projectileVisualId,
                 packet.Origin,
                 packet.TargetPoint,
                 packet.Speed,
                 packet.Radius,
                 packet.LifeTime,
                 ResolveProjectileGravity(attackSettings));
+            StartServerCannonDamage(projectileVisualId, packet, attackSettings);
             return true;
         }
 
@@ -320,10 +324,11 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        StartServerProjectileDamage(packet, attackSettings);
+        ulong projectileVisualId = AllocateServerProjectileVisualId();
         ApplyAttackFacingFromProjectile(packet);
         PlayShootAnimationClientRpc(transform.rotation);
-        SpawnProjectileVisualClientRpc(packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+        SpawnProjectileVisualClientRpc(projectileVisualId, packet.Origin, packet.TargetPoint, packet.Speed, packet.Radius, packet.LifeTime);
+        StartServerProjectileDamage(projectileVisualId, packet, attackSettings);
     }
 
     [ServerRpc(RequireOwnership = false)]
@@ -388,16 +393,18 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        StartServerCannonDamage(packet, attackSettings);
+        ulong projectileVisualId = AllocateServerProjectileVisualId();
         ApplyAttackFacingFromProjectile(packet);
         PlayShootAnimationClientRpc(transform.rotation);
         SpawnCannonProjectileVisualClientRpc(
+            projectileVisualId,
             packet.Origin,
             packet.TargetPoint,
             packet.Speed,
             packet.Radius,
             packet.LifeTime,
             ResolveProjectileGravity(attackSettings));
+        StartServerCannonDamage(projectileVisualId, packet, attackSettings);
     }
 
     public void PlayHookAnimation()
@@ -422,7 +429,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void SpawnProjectileVisualClientRpc(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime)
+    private void SpawnProjectileVisualClientRpc(ulong projectileVisualId, Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime)
     {
         // Spawn the approved projectile visual on every connected client using the shooter's equipment data.
         SimpleProjectileVisual.Spawn(
@@ -432,7 +439,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             radius,
             lifeTime,
             ResolveProjectileVisualPrefab(),
-            ResolveProjectileVisualResourcePath());
+            ResolveProjectileVisualResourcePath(),
+            projectileVisualId);
     }
 
     [ClientRpc]
@@ -443,7 +451,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void SpawnCannonProjectileVisualClientRpc(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, float gravity)
+    private void SpawnCannonProjectileVisualClientRpc(ulong projectileVisualId, Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, float gravity)
     {
         // Spawn a gravity-driven cannon projectile visual on every connected client.
         SimpleProjectileVisual.SpawnBallistic(
@@ -454,7 +462,15 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             lifeTime,
             gravity,
             ResolveProjectileVisualPrefab(),
-            ResolveProjectileVisualResourcePath());
+            ResolveProjectileVisualResourcePath(),
+            projectileVisualId);
+    }
+
+    [ClientRpc]
+    private void StopProjectileVisualClientRpc(ulong projectileVisualId, Vector3 impactPoint)
+    {
+        // Remove the matching projectile visual at the server-authoritative impact point on every client.
+        SimpleProjectileVisual.StopNetworkVisual(projectileVisualId, impactPoint);
     }
 
     [ClientRpc]
@@ -948,7 +964,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         return transform.position + Vector3.up * Mathf.Max(0f, fallbackTargetHeight);
     }
 
-    private void StartServerProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private void StartServerProjectileDamage(ulong projectileVisualId, ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
         // Resolve projectile damage over travel time so projectile weapons do not behave like hitscan attacks.
         if (!IsServer)
@@ -956,10 +972,10 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        StartCoroutine(ResolveProjectileDamageOverTravel(packet, attackSettings));
+        StartCoroutine(ResolveProjectileDamageOverTravel(projectileVisualId, packet, attackSettings));
     }
 
-    private void StartServerCannonDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private void StartServerCannonDamage(ulong projectileVisualId, ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
         // Resolve cannon travel on the server so splash damage uses an authoritative impact point.
         if (!IsServer)
@@ -967,10 +983,10 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        StartCoroutine(ResolveCannonDamageOverTravel(packet, attackSettings));
+        StartCoroutine(ResolveCannonDamageOverTravel(projectileVisualId, packet, attackSettings));
     }
 
-    private IEnumerator ResolveProjectileDamageOverTravel(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private IEnumerator ResolveProjectileDamageOverTravel(ulong projectileVisualId, ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
         // Advance the authoritative projectile in short segments and apply damage only when a segment intersects a target.
         Vector3 toTarget = packet.TargetPoint - packet.Origin;
@@ -996,8 +1012,15 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             segmentPacket.Origin = segmentOrigin;
             segmentPacket.TargetPoint = segmentTarget;
 
-            if (TryApplyProjectileDamage(segmentPacket, attackSettings))
+            if (TryApplyProjectileDamage(segmentPacket, attackSettings, out Vector3 impactPoint))
             {
+                StopProjectileVisualClientRpc(projectileVisualId, impactPoint);
+                yield break;
+            }
+
+            if (TryFindWorldProjectileBlock(segmentPacket, out impactPoint, out _))
+            {
+                StopProjectileVisualClientRpc(projectileVisualId, impactPoint);
                 yield break;
             }
 
@@ -1008,7 +1031,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
     }
 
-    private IEnumerator ResolveCannonDamageOverTravel(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private IEnumerator ResolveCannonDamageOverTravel(ulong projectileVisualId, ProjectilePacket packet, EquipmentAttackSettings attackSettings)
     {
         // Advance the cannon projectile with gravity and explode only after a server-side collision.
         Vector3 toTarget = packet.TargetPoint - packet.Origin;
@@ -1035,6 +1058,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
             if (TryFindCannonImpact(segmentPacket, out Vector3 impactPoint))
             {
+                StopProjectileVisualClientRpc(projectileVisualId, impactPoint);
                 ExplodeCannonAt(impactPoint, attackSettings);
                 yield break;
             }
@@ -1046,10 +1070,10 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
     }
 
-    private bool TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings)
+    private bool TryApplyProjectileDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings, out Vector3 impactPoint)
     {
         // Server resolves projectile damage against the nearest damageable target.
-        return TryApplyLineAttackDamage(packet, attackSettings, "Projectile");
+        return TryApplyLineAttackDamage(packet, attackSettings, "Projectile", out impactPoint);
     }
 
     private bool TryApplyHitscanDamage(HitscanPacket packet, EquipmentAttackSettings attackSettings)
@@ -1064,12 +1088,13 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             LifeTime = MinProjectileLifetime
         };
 
-        return TryApplyLineAttackDamage(linePacket, attackSettings, "Hitscan");
+        return TryApplyLineAttackDamage(linePacket, attackSettings, "Hitscan", out _);
     }
 
-    private bool TryApplyLineAttackDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings, string attackLabel)
+    private bool TryApplyLineAttackDamage(ProjectilePacket packet, EquipmentAttackSettings attackSettings, string attackLabel, out Vector3 impactPoint)
     {
         // Server resolves the nearest damageable target, including players and destructible pickups.
+        impactPoint = default;
         if (!IsServer)
         {
             return false;
@@ -1084,6 +1109,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         bool hitPlayer = TryFindProjectileTarget(packet, out NetworkPlayerCombatState targetCombatState, out Vector3 playerHitPoint, out float playerHitDistance);
         bool hitBox = TryFindProjectileBoxTarget(packet, out int boxSlotId, out Vector3 boxHitPoint, out float boxHitDistance);
         bool hitEquipment = TryFindProjectileEquipmentTarget(packet, out int equipmentSlotId, out Vector3 equipmentHitPoint, out float equipmentHitDistance);
+        bool hitPenguin = TryFindProjectilePenguinTarget(packet, out int penguinSlotId, out Vector3 penguinHitPoint, out float penguinHitDistance);
         int nearestPickupKind = 0;
         float nearestPickupDistance = float.MaxValue;
         if (hitBox)
@@ -1098,9 +1124,34 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             nearestPickupDistance = equipmentHitDistance;
         }
 
+        if (hitPenguin && penguinHitDistance < nearestPickupDistance)
+        {
+            nearestPickupKind = 3;
+            nearestPickupDistance = penguinHitDistance;
+        }
+
         if (nearestPickupKind != 0 && (!hitPlayer || nearestPickupDistance <= playerHitDistance))
         {
-            return ApplyLineAttackPickupDamage(attackLabel, nearestPickupKind, boxSlotId, boxHitPoint, equipmentSlotId, equipmentHitPoint, damage);
+            bool appliedDamage = ApplyLineAttackPickupDamage(
+                attackLabel,
+                nearestPickupKind,
+                boxSlotId,
+                boxHitPoint,
+                equipmentSlotId,
+                equipmentHitPoint,
+                penguinSlotId,
+                penguinHitPoint,
+                damage);
+            if (appliedDamage)
+            {
+                impactPoint = nearestPickupKind == 1
+                    ? boxHitPoint
+                    : nearestPickupKind == 2
+                        ? equipmentHitPoint
+                        : penguinHitPoint;
+            }
+
+            return appliedDamage;
         }
 
         if (!hitPlayer)
@@ -1111,11 +1162,24 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         Vector3 hitDirection = (packet.TargetPoint - packet.Origin).normalized;
         if (targetCombatState.ApplyDamage(damage, OwnerClientId, playerHitPoint, hitDirection))
         {
+            impactPoint = playerHitPoint;
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
             return true;
         }
 
         return false;
+    }
+
+    private static ulong AllocateServerProjectileVisualId()
+    {
+        // Allocate a nonzero identifier shared by the server damage path and all client visual instances.
+        nextServerProjectileVisualId++;
+        if (nextServerProjectileVisualId == 0)
+        {
+            nextServerProjectileVisualId++;
+        }
+
+        return nextServerProjectileVisualId;
     }
 
     private float ResolveOutgoingAttackDamage(EquipmentAttackSettings attackSettings)
@@ -1154,6 +1218,14 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         {
             nearestDistance = equipmentHitDistance;
             impactPoint = equipmentHitPoint;
+            foundImpact = true;
+        }
+
+        if (TryFindProjectilePenguinTarget(packet, out _, out Vector3 penguinHitPoint, out float penguinHitDistance) &&
+            penguinHitDistance < nearestDistance)
+        {
+            nearestDistance = penguinHitDistance;
+            impactPoint = penguinHitPoint;
             foundImpact = true;
         }
 
@@ -1278,7 +1350,16 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         return Mathf.Clamp01(attackSettings != null ? attackSettings.SelfSplashDamageMultiplier : 0.5f);
     }
 
-    private bool ApplyLineAttackPickupDamage(string attackLabel, int pickupKind, int boxSlotId, Vector3 boxHitPoint, int equipmentSlotId, Vector3 equipmentHitPoint, float damage)
+    private bool ApplyLineAttackPickupDamage(
+        string attackLabel,
+        int pickupKind,
+        int boxSlotId,
+        Vector3 boxHitPoint,
+        int equipmentSlotId,
+        Vector3 equipmentHitPoint,
+        int penguinSlotId,
+        Vector3 penguinHitPoint,
+        float damage)
     {
         // Apply damage to the nearest server-managed pickup target hit by a line attack path.
         GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
@@ -1296,6 +1377,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(equipmentSlotId, damage, OwnerClientId))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
+            return true;
+        }
+
+        if (pickupKind == 3 && pickupManager.TryApplyPenguinDamage(penguinSlotId, damage, OwnerClientId, penguinHitPoint))
+        {
+            Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit Penguin attacker={OwnerClientId} slot={penguinSlotId} point={penguinHitPoint}");
             return true;
         }
 
@@ -1417,6 +1504,28 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         }
 
         return pickupManager.TryFindDamageableEquipment(packet.Origin, direction.normalized, distance, packet.Radius, out equipmentSlotId, out hitDistance, out hitPoint);
+    }
+
+    private bool TryFindProjectilePenguinTarget(ProjectilePacket packet, out int penguinSlotId, out Vector3 hitPoint, out float hitDistance)
+    {
+        // Ask the gameplay manager for the nearest living event Penguin along this attack segment.
+        penguinSlotId = -1;
+        hitPoint = default;
+        hitDistance = float.MaxValue;
+        GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
+        if (pickupManager == null)
+        {
+            return false;
+        }
+
+        Vector3 direction = packet.TargetPoint - packet.Origin;
+        float distance = direction.magnitude;
+        if (distance <= 0.001f)
+        {
+            return false;
+        }
+
+        return pickupManager.TryFindDamageablePenguin(packet.Origin, direction.normalized, distance, packet.Radius, out penguinSlotId, out hitDistance, out hitPoint);
     }
 
     private bool TryFindFallbackTransformTarget(ProjectilePacket packet, Vector3 direction, float distance, float nearestBlockDistance, ref NetworkPlayerCombatState targetCombatState, ref float nearestTargetDistance, ref Vector3 nearestTargetPoint)

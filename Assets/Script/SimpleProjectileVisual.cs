@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 public class SimpleProjectileVisual : MonoBehaviour
@@ -5,6 +6,7 @@ public class SimpleProjectileVisual : MonoBehaviour
     private const string DefaultProjectileVisualResourcePath = "fbx/Equip_Bullets/BasicBullet";
     private const float PrefabMaxSizeRadiusMultiplier = 4f;
     private static readonly Color ProjectileColor = new(1f, 0.85f, 0.15f, 1f);
+    private static readonly Dictionary<ulong, SimpleProjectileVisual> ActiveNetworkVisuals = new();
 
     private Vector3 direction;
     private Vector3 velocity;
@@ -16,6 +18,7 @@ public class SimpleProjectileVisual : MonoBehaviour
     private float radius;
     private float spawnTime;
     private bool useBallisticMotion;
+    private ulong networkVisualId;
 
     public static void Spawn(
         Vector3 origin,
@@ -24,7 +27,8 @@ public class SimpleProjectileVisual : MonoBehaviour
         float projectileRadius,
         float lifeTime,
         GameObject visualPrefab = null,
-        string visualResourcePath = null)
+        string visualResourcePath = null,
+        ulong networkId = 0)
     {
         // Create a projectile wrapper and attach the configured equipment visual to it.
         Vector3 toTarget = targetPoint - origin;
@@ -38,6 +42,7 @@ public class SimpleProjectileVisual : MonoBehaviour
 
         SimpleProjectileVisual visual = projectile.AddComponent<SimpleProjectileVisual>();
         visual.Initialize(travelDirection, projectileSpeed, distance, lifeTime);
+        visual.RegisterNetworkVisual(networkId);
     }
 
     public static void SpawnBallistic(
@@ -48,7 +53,8 @@ public class SimpleProjectileVisual : MonoBehaviour
         float lifeTime,
         float projectileGravity,
         GameObject visualPrefab = null,
-        string visualResourcePath = null)
+        string visualResourcePath = null,
+        ulong networkId = 0)
     {
         // Create a gravity-driven projectile visual for cannon-style attacks.
         Vector3 toTarget = targetPoint - origin;
@@ -60,6 +66,22 @@ public class SimpleProjectileVisual : MonoBehaviour
 
         SimpleProjectileVisual visual = projectile.AddComponent<SimpleProjectileVisual>();
         visual.InitializeBallistic(travelDirection * Mathf.Max(0.01f, projectileSpeed), projectileRadius, lifeTime, projectileGravity);
+        visual.RegisterNetworkVisual(networkId);
+    }
+
+    public static void StopNetworkVisual(ulong networkId, Vector3 impactPoint)
+    {
+        // Remove the matching client-side projectile as soon as the server confirms its impact.
+        if (networkId == 0 || !ActiveNetworkVisuals.TryGetValue(networkId, out SimpleProjectileVisual visual) || visual == null)
+        {
+            return;
+        }
+
+        ActiveNetworkVisuals.Remove(networkId);
+        visual.networkVisualId = 0;
+        visual.transform.position = impactPoint;
+        visual.gameObject.SetActive(false);
+        Destroy(visual.gameObject);
     }
 
     private static void CreateProjectileVisual(Transform parent, float projectileRadius, GameObject visualPrefab, string visualResourcePath)
@@ -207,6 +229,34 @@ public class SimpleProjectileVisual : MonoBehaviour
         expireTime = Time.time + Mathf.Max(0.1f, lifeTime);
         spawnTime = Time.time;
         useBallisticMotion = true;
+    }
+
+    private void RegisterNetworkVisual(ulong networkId)
+    {
+        // Track server-approved projectile visuals so an impact RPC can remove the exact instance.
+        if (networkId == 0)
+        {
+            return;
+        }
+
+        if (ActiveNetworkVisuals.TryGetValue(networkId, out SimpleProjectileVisual existingVisual) && existingVisual != null)
+        {
+            Destroy(existingVisual.gameObject);
+        }
+
+        networkVisualId = networkId;
+        ActiveNetworkVisuals[networkId] = this;
+    }
+
+    private void OnDestroy()
+    {
+        // Remove expired or locally collided visuals from the network lookup table.
+        if (networkVisualId != 0 &&
+            ActiveNetworkVisuals.TryGetValue(networkVisualId, out SimpleProjectileVisual registeredVisual) &&
+            registeredVisual == this)
+        {
+            ActiveNetworkVisuals.Remove(networkVisualId);
+        }
     }
 
     private void Update()

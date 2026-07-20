@@ -7772,6 +7772,8 @@ MonoBehaviour:
     Clip: {fileID: 8300000, guid: 00187c6de38b16b4e947cb4b1f87be38, type: 3}
   - EventType: 2
     Clip: {fileID: 8300000, guid: 297f52f7dd7848d44bf0b833bf8ccf78, type: 3}
+  - EventType: 3
+    Clip: {fileID: 8300000, guid: 783057e77afe57843a6d0235b3412ccc, type: 3}
   suddenEventBgmVolume: 0.85
   suddenEventFadeInDuration: 0.3
   bgmVolume: 0.7

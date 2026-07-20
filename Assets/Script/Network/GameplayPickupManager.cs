@@ -13,6 +13,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultDefenceUpEffectResourcePath = "Effects/CustomEffects/DefenceUp";
     private const string DefaultBoxHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Stones hit";
     private const string DefaultBombBoxExplosionEffectResourcePath = "Effects/CustomEffects/Item_ExplosionA Variant";
+    private const string DefaultPenguinVisualResourcePath = "Prefabs/Enemys/Penguin_enemy";
     private const string DefaultFinalMatchRuleResourcesPath = "FinalMatchRules";
     private const string DefaultFinalMatchRuleId = "break_statues";
     private const int DefaultFinalObjectiveSlotIndex = 1000;
@@ -127,6 +128,22 @@ public class GameplayPickupManager : NetworkBehaviour
         public Coroutine DespawnRoutine;
         public Coroutine BlinkRoutine;
         public bool Blinking;
+    }
+
+    private class PenguinSlot
+    {
+        public bool Visible;
+        public bool Alive;
+        public float CurrentHealth;
+        public float MaxHealth;
+        public Vector3 Position;
+        public Vector3 Forward = Vector3.forward;
+        public Vector3 MoveDirection;
+        public float MoveSpeed;
+        public float NextDecisionTime;
+        public Coroutine DeathRoutine;
+        public GameObject Visual;
+        public PenguinEnemyVisual VisualController;
     }
 
     private readonly struct SuddenEventSelection
@@ -284,8 +301,32 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private SuddenEventType[] fallbackSuddenEventTypes =
     {
         SuddenEventType.EndlessAutoFire,
-        SuddenEventType.MixedStatueLoot
+        SuddenEventType.MixedStatueLoot,
+        SuddenEventType.PenguinFeast
     };
+
+    [Header("Penguin Sudden Event")]
+    [SerializeField] private string penguinVisualResourcePath = DefaultPenguinVisualResourcePath;
+    [SerializeField] private int penguinSlotIdBase = 7000;
+    [SerializeField] private int fallbackPenguinSpawnCount = 5;
+    [SerializeField] private float fallbackPenguinStatueHealthMultiplier = 1.5f;
+    [SerializeField] private int fallbackPenguinStatLootCount = 8;
+    [SerializeField] private Vector2 fallbackPenguinMoveSpeedRange = new(1.2f, 2.2f);
+    [SerializeField] private Vector2 fallbackPenguinDecisionDurationRange = new(1.2f, 3.5f);
+    [Range(0f, 1f)]
+    [SerializeField] private float fallbackPenguinIdleChance = 0.35f;
+    [SerializeField] private float penguinHitRadius = 0.7f;
+    [SerializeField] private float penguinTargetHeight = 0.7f;
+    [SerializeField] private float penguinBoundsPadding = 1f;
+    [SerializeField] private LayerMask penguinGroundMask = ~0;
+    [SerializeField] private float penguinGroundRaycastHeight = 3f;
+    [SerializeField] private float penguinGroundRaycastDistance = 6f;
+    [SerializeField] private float penguinGroundOffset;
+    [SerializeField] private float penguinTurnSpeed = 360f;
+    [SerializeField] private float penguinNetworkSyncInterval = 0.1f;
+    [SerializeField] private float penguinVisualPositionSharpness = 14f;
+    [SerializeField] private Vector3 penguinVisualScale = new(0.25f, 0.25f, 0.25f);
+    [SerializeField] private float penguinDeathDuration = 2f;
 
     [Header("Stat Pickup Visual")]
     [SerializeField] private string statPickupVisualResourcePath = "fbx/Stat_Item/Stat_Item";
@@ -463,6 +504,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private readonly Dictionary<int, PickupSlot> slots = new();
     private readonly Dictionary<int, BoxSlot> boxSlots = new();
+    private readonly Dictionary<int, PenguinSlot> penguinSlots = new();
     private readonly Dictionary<ulong, int> finalStatueBreakScores = new();
     private readonly Dictionary<ulong, float> nextHookRequestTimes = new();
     private PlayerStatsState statsState;
@@ -473,9 +515,11 @@ public class GameplayPickupManager : NetworkBehaviour
     private int nextLootPickupSlotId;
     private Coroutine suddenEventRoutine;
     private SuddenEventType activeSuddenEvent = SuddenEventType.None;
+    private PenguinSuddenEventDefinition activePenguinEventDefinition;
     private FinalMatchRuleDefinition activeFinalMatchRuleDefinition;
     private IFinalMatchRuleHandler activeFinalMatchRuleHandler;
     private float activeSuddenEventEndTime;
+    private float nextPenguinNetworkSyncTime;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
     private GameObject resolvedDefaultStatBuffEffectPrefab;
     private GameObject resolvedDefaultHealingPickupEffectPrefab;
@@ -483,6 +527,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private GameObject resolvedDefaultDefenceUpEffectPrefab;
     private GameObject resolvedDefaultBoxHitEffectPrefab;
     private GameObject resolvedDefaultBombBoxExplosionEffectPrefab;
+    private GameObject resolvedPenguinVisualPrefab;
     private Texture2D resolvedBasicBoxCleanTexture;
     private Texture2D resolvedBasicBoxHalfBreakTexture;
     private Texture2D resolvedBasicBoxFullBreakTexture;
@@ -496,6 +541,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private bool triedLoadDefaultDefenceUpEffectPrefab;
     private bool triedLoadDefaultBoxHitEffectPrefab;
     private bool triedLoadDefaultBombBoxExplosionEffectPrefab;
+    private bool triedLoadPenguinVisualPrefab;
     private bool triedLoadBasicBoxTextures;
     private bool triedLoadStatPickupVisualPrefab;
     private bool warnedMissingStatPickupMaterial;
@@ -559,6 +605,7 @@ public class GameplayPickupManager : NetworkBehaviour
         if (IsServer)
         {
             UpdateActiveSuddenEvent();
+            UpdatePenguinEvent(Time.deltaTime);
         }
 
         // 서버는 서버 기준 위치로 자동 획득을 시도하고, 클라이언트는 자신의 위치 기준으로 획득 요청을 보낸다.
@@ -665,6 +712,7 @@ public class GameplayPickupManager : NetworkBehaviour
             StopSuddenEventBgmClientRpc(revealBaseBgm: false);
         }
 
+        StopPenguinEvent();
         activeSuddenEvent = SuddenEventType.None;
         activeSuddenEventEndTime = 0f;
     }
@@ -831,6 +879,11 @@ public class GameplayPickupManager : NetworkBehaviour
         activeSuddenEvent = eventKind;
         activeSuddenEventEndTime = Time.time + duration;
 
+        if (eventKind == SuddenEventType.PenguinFeast)
+        {
+            StartPenguinEvent(selection.Definition as PenguinSuddenEventDefinition);
+        }
+
         string title = ResolveSuddenEventTitle(selection);
         matchStateController?.ShowNoticeToAll(title, 4f);
         PlaySuddenEventBgmClientRpc(eventKind);
@@ -865,6 +918,7 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             SuddenEventType.EndlessAutoFire => "자동 발사가 멈춰지지 않는다!",
             SuddenEventType.MixedStatueLoot => "석상의 내용물이 제각각이다!",
+            SuddenEventType.PenguinFeast => "펭귄들이 아이템을 먹고 뚱뚱해졌다!",
             _ => "돌발 이벤트 발생!"
         };
     }
@@ -916,8 +970,275 @@ public class GameplayPickupManager : NetworkBehaviour
             StopSuddenEventBgmClientRpc(revealBaseBgm);
         }
 
+        StopPenguinEvent();
         activeSuddenEvent = SuddenEventType.None;
         activeSuddenEventEndTime = 0f;
+    }
+
+    private void StartPenguinEvent(PenguinSuddenEventDefinition definition)
+    {
+        // Spawn one server-authoritative group using editable values from the selected event asset.
+        StopPenguinEvent();
+        activePenguinEventDefinition = definition;
+        int spawnCount = ResolvePenguinSpawnCount();
+        float maxHealth = ResolvePenguinMaxHealth();
+
+        for (int i = 0; i < spawnCount; i++)
+        {
+            int slotId = penguinSlotIdBase + i;
+            PenguinSlot slot = GetOrCreatePenguinSlot(slotId);
+            slot.Visible = true;
+            slot.Alive = true;
+            slot.MaxHealth = maxHealth;
+            slot.CurrentHealth = maxHealth;
+            slot.Position = GetRandomPenguinSpawnPosition();
+            slot.Forward = GetRandomHorizontalDirection();
+            ChooseNextPenguinMovement(slot);
+            SendPenguinVisualState(slotId, slot, snap: true, playDeath: false);
+        }
+
+        nextPenguinNetworkSyncTime = Time.time + Mathf.Max(0.02f, penguinNetworkSyncInterval);
+        Debug.Log($"[GameplayPickupManager] Penguin event spawned count={spawnCount} maxHealth={maxHealth:0.0} lootEach={ResolvePenguinStatLootCount()}");
+    }
+
+    private void StopPenguinEvent()
+    {
+        // Cancel death timers and hide every pooled Penguin when its event or the main match ends.
+        activePenguinEventDefinition = null;
+        nextPenguinNetworkSyncTime = 0f;
+        foreach (KeyValuePair<int, PenguinSlot> pair in penguinSlots)
+        {
+            PenguinSlot slot = pair.Value;
+            if (slot.DeathRoutine != null)
+            {
+                StopCoroutine(slot.DeathRoutine);
+                slot.DeathRoutine = null;
+            }
+
+            slot.Visible = false;
+            slot.Alive = false;
+            slot.MoveDirection = Vector3.zero;
+            slot.MoveSpeed = 0f;
+            slot.VisualController?.Hide();
+            if (IsServer && IsSpawned)
+            {
+                SendPenguinVisualState(pair.Key, slot, snap: true, playDeath: false);
+            }
+        }
+    }
+
+    private void UpdatePenguinEvent(float deltaTime)
+    {
+        // Advance simple random roaming on the server and periodically replicate compact transform samples.
+        if (activeSuddenEvent != SuddenEventType.PenguinFeast || !IsSuddenEventActive())
+        {
+            return;
+        }
+
+        bool shouldSync = Time.time >= nextPenguinNetworkSyncTime;
+        foreach (KeyValuePair<int, PenguinSlot> pair in penguinSlots)
+        {
+            PenguinSlot slot = pair.Value;
+            if (!slot.Visible || !slot.Alive)
+            {
+                continue;
+            }
+
+            UpdatePenguinMovement(slot, Mathf.Max(0f, deltaTime));
+            if (shouldSync)
+            {
+                SendPenguinVisualState(pair.Key, slot, snap: false, playDeath: false);
+            }
+        }
+
+        if (shouldSync)
+        {
+            nextPenguinNetworkSyncTime = Time.time + Mathf.Max(0.02f, penguinNetworkSyncInterval);
+        }
+    }
+
+    private void UpdatePenguinMovement(PenguinSlot slot, float deltaTime)
+    {
+        // Move one Penguin without pathfinding while rejecting steps outside the arena or above missing ground.
+        if (slot == null || !slot.Alive)
+        {
+            return;
+        }
+
+        if (Time.time >= slot.NextDecisionTime)
+        {
+            ChooseNextPenguinMovement(slot);
+        }
+
+        if (slot.MoveDirection.sqrMagnitude <= 0.0001f || slot.MoveSpeed <= 0f || deltaTime <= 0f)
+        {
+            return;
+        }
+
+        Quaternion currentRotation = Quaternion.LookRotation(slot.Forward.sqrMagnitude > 0.0001f ? slot.Forward : slot.MoveDirection, Vector3.up);
+        Quaternion desiredRotation = Quaternion.LookRotation(slot.MoveDirection, Vector3.up);
+        Quaternion nextRotation = Quaternion.RotateTowards(currentRotation, desiredRotation, Mathf.Max(0f, penguinTurnSpeed) * deltaTime);
+        Vector3 nextForward = nextRotation * Vector3.forward;
+        Vector3 candidate = slot.Position + nextForward * slot.MoveSpeed * deltaTime;
+
+        if (!IsInsidePenguinBounds(candidate) || !TryResolvePenguinGroundPosition(candidate, out Vector3 groundedPosition))
+        {
+            RedirectPenguinTowardArena(slot);
+            return;
+        }
+
+        slot.Forward = nextForward.normalized;
+        slot.Position = groundedPosition;
+    }
+
+    private void ChooseNextPenguinMovement(PenguinSlot slot)
+    {
+        // Randomly alternate between idle pauses and uncomplicated horizontal wandering.
+        if (slot == null)
+        {
+            return;
+        }
+
+        Vector2 durationRange = ResolvePenguinDecisionDurationRange();
+        slot.NextDecisionTime = Time.time + Random.Range(durationRange.x, durationRange.y);
+        if (Random.value < ResolvePenguinIdleChance())
+        {
+            slot.MoveDirection = Vector3.zero;
+            slot.MoveSpeed = 0f;
+            return;
+        }
+
+        slot.MoveDirection = GetRandomHorizontalDirection();
+        Vector2 speedRange = ResolvePenguinMoveSpeedRange();
+        slot.MoveSpeed = Random.Range(speedRange.x, speedRange.y);
+    }
+
+    private void RedirectPenguinTowardArena(PenguinSlot slot)
+    {
+        // Turn an unsafe wander step back toward the configured spawn-area center.
+        Vector3 center = new((xRange.x + xRange.y) * 0.5f, slot.Position.y, (zRange.x + zRange.y) * 0.5f);
+        Vector3 inward = center - slot.Position;
+        inward.y = 0f;
+        slot.MoveDirection = inward.sqrMagnitude > 0.0001f ? inward.normalized : -slot.Forward;
+        slot.NextDecisionTime = Time.time + 0.5f;
+    }
+
+    private Vector3 GetRandomPenguinSpawnPosition()
+    {
+        // Find a random in-bounds point with ground beneath it, retaining a static fallback for sparse test scenes.
+        for (int attempt = 0; attempt < 16; attempt++)
+        {
+            Vector3 candidate = GetRandomSpawnPosition();
+            if (TryResolvePenguinGroundPosition(candidate, out Vector3 groundedPosition))
+            {
+                return groundedPosition;
+            }
+        }
+
+        return ResolveBoxGroundedPosition(GetRandomSpawnPosition());
+    }
+
+    private bool TryResolvePenguinGroundPosition(Vector3 position, out Vector3 groundedPosition)
+    {
+        // Raycast downward before accepting a step so Penguins never walk over unsupported arena edges.
+        groundedPosition = position;
+        if (!IsInsidePenguinBounds(position))
+        {
+            return false;
+        }
+
+        Vector3 rayOrigin = position + Vector3.up * Mathf.Max(0f, penguinGroundRaycastHeight);
+        float rayDistance = Mathf.Max(0.1f, penguinGroundRaycastHeight + penguinGroundRaycastDistance);
+        if (!Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, rayDistance, penguinGroundMask, QueryTriggerInteraction.Ignore))
+        {
+            return false;
+        }
+
+        groundedPosition.y = hit.point.y + penguinGroundOffset;
+        return true;
+    }
+
+    private bool IsInsidePenguinBounds(Vector3 position)
+    {
+        // Keep wandering inside a padded version of the same rectangle used by field-item spawns.
+        ResolvePenguinBounds(out float minX, out float maxX, out float minZ, out float maxZ);
+        return position.x >= minX && position.x <= maxX && position.z >= minZ && position.z <= maxZ;
+    }
+
+    private void ResolvePenguinBounds(out float minX, out float maxX, out float minZ, out float maxZ)
+    {
+        // Normalize serialized ranges and cap padding so even very small test arenas remain usable.
+        float rawMinX = Mathf.Min(xRange.x, xRange.y);
+        float rawMaxX = Mathf.Max(xRange.x, xRange.y);
+        float rawMinZ = Mathf.Min(zRange.x, zRange.y);
+        float rawMaxZ = Mathf.Max(zRange.x, zRange.y);
+        float xPadding = Mathf.Min(Mathf.Max(0f, penguinBoundsPadding), (rawMaxX - rawMinX) * 0.45f);
+        float zPadding = Mathf.Min(Mathf.Max(0f, penguinBoundsPadding), (rawMaxZ - rawMinZ) * 0.45f);
+        minX = rawMinX + xPadding;
+        maxX = rawMaxX - xPadding;
+        minZ = rawMinZ + zPadding;
+        maxZ = rawMaxZ - zPadding;
+    }
+
+    private static Vector3 GetRandomHorizontalDirection()
+    {
+        // Generate one uniformly distributed horizontal travel direction.
+        float angle = Random.Range(0f, Mathf.PI * 2f);
+        return new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+    }
+
+    private int ResolvePenguinSpawnCount()
+    {
+        // Prefer event-asset spawn tuning and retain a safe manager fallback.
+        return activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.SpawnCount
+            : Mathf.Max(1, fallbackPenguinSpawnCount);
+    }
+
+    private float ResolvePenguinMaxHealth()
+    {
+        // Define Penguin durability as the basic statue's health multiplied by the event setting.
+        float statueHealth = Mathf.Max(1f, ResolveBoxVariant("basic_stat_box").MaxHealth);
+        float multiplier = activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.StatueHealthMultiplier
+            : Mathf.Max(0.1f, fallbackPenguinStatueHealthMultiplier);
+        return statueHealth * multiplier;
+    }
+
+    private int ResolvePenguinStatLootCount()
+    {
+        // Resolve how many random stat pickups one defeated Penguin spills.
+        return activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.StatLootCount
+            : Mathf.Max(0, fallbackPenguinStatLootCount);
+    }
+
+    private Vector2 ResolvePenguinMoveSpeedRange()
+    {
+        // Resolve and normalize the active event's roaming-speed range.
+        Vector2 range = activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.MoveSpeedRange
+            : fallbackPenguinMoveSpeedRange;
+        float min = Mathf.Max(0f, Mathf.Min(range.x, range.y));
+        return new Vector2(min, Mathf.Max(min, Mathf.Max(range.x, range.y)));
+    }
+
+    private Vector2 ResolvePenguinDecisionDurationRange()
+    {
+        // Resolve and normalize how long each random idle or movement decision lasts.
+        Vector2 range = activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.DecisionDurationRange
+            : fallbackPenguinDecisionDurationRange;
+        float min = Mathf.Max(0.1f, Mathf.Min(range.x, range.y));
+        return new Vector2(min, Mathf.Max(min, Mathf.Max(range.x, range.y)));
+    }
+
+    private float ResolvePenguinIdleChance()
+    {
+        // Resolve the probability that a Penguin pauses at its next movement decision.
+        return activePenguinEventDefinition != null
+            ? activePenguinEventDefinition.IdleChance
+            : Mathf.Clamp01(fallbackPenguinIdleChance);
     }
 
     private void SpawnMainMatchPickups()
@@ -2235,6 +2556,101 @@ public class GameplayPickupManager : NetworkBehaviour
             : Vector3.zero;
     }
 
+    public bool TryFindDamageablePenguin(Vector3 origin, Vector3 direction, float maxDistance, float projectileRadius, out int slotId, out float hitDistance, out Vector3 hitPoint)
+    {
+        // Find the nearest living event Penguin touched by a server-approved projectile path.
+        slotId = -1;
+        hitDistance = float.MaxValue;
+        hitPoint = default;
+        if (!IsServer || direction.sqrMagnitude <= 0.0001f || maxDistance <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 normalizedDirection = direction.normalized;
+        float combinedRadius = Mathf.Max(0f, projectileRadius) + Mathf.Max(0.1f, penguinHitRadius);
+        foreach (KeyValuePair<int, PenguinSlot> pair in penguinSlots)
+        {
+            PenguinSlot slot = pair.Value;
+            if (slot == null || !slot.Visible || !slot.Alive || slot.CurrentHealth <= 0f)
+            {
+                continue;
+            }
+
+            Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, penguinTargetHeight);
+            float distanceToPath = DistanceFromRaySegment(origin, normalizedDirection, targetPoint, maxDistance, out float alongRay);
+            if (distanceToPath <= combinedRadius && alongRay < hitDistance)
+            {
+                slotId = pair.Key;
+                hitDistance = alongRay;
+                hitPoint = origin + normalizedDirection * alongRay;
+            }
+        }
+
+        return slotId >= 0;
+    }
+
+    public bool TryApplyPenguinDamage(int slotId, float damage, ulong attackerClientId, Vector3 hitPoint)
+    {
+        // Apply server-authoritative damage and trigger one death-and-loot sequence at zero health.
+        if (!IsServer || damage <= 0f || !penguinSlots.TryGetValue(slotId, out PenguinSlot slot) ||
+            slot == null || !slot.Visible || !slot.Alive || slot.CurrentHealth <= 0f)
+        {
+            return false;
+        }
+
+        slot.CurrentHealth = Mathf.Max(0f, slot.CurrentHealth - damage);
+        Debug.Log($"[GameplayPickupManager] Penguin damaged slot={slotId} attacker={attackerClientId} damage={damage:0.0} health={slot.CurrentHealth:0.0}/{slot.MaxHealth:0.0} point={hitPoint}");
+        if (slot.CurrentHealth <= 0f)
+        {
+            DefeatPenguin(slotId, attackerClientId, slot);
+        }
+
+        return true;
+    }
+
+    private void DefeatPenguin(int slotId, ulong attackerClientId, PenguinSlot slot)
+    {
+        // Stop the defeated Penguin, spill random stats, and keep its visual alive long enough for death playback.
+        if (slot == null || !slot.Alive)
+        {
+            return;
+        }
+
+        slot.Alive = false;
+        slot.MoveDirection = Vector3.zero;
+        slot.MoveSpeed = 0f;
+        int lootCount = DropStatBoxLoot(slot.Position, GenerateStatLoot(ResolvePenguinStatLootCount()));
+        SendPenguinVisualState(slotId, slot, snap: true, playDeath: true);
+
+        if (slot.DeathRoutine != null)
+        {
+            StopCoroutine(slot.DeathRoutine);
+        }
+
+        slot.DeathRoutine = StartCoroutine(HideDefeatedPenguinAfterDelay(slotId));
+        Debug.Log($"[GameplayPickupManager] Penguin defeated slot={slotId} attacker={attackerClientId} lootCount={lootCount}");
+    }
+
+    private IEnumerator HideDefeatedPenguinAfterDelay(int slotId)
+    {
+        // Wait for the death animation, then return the visual to its inactive pooled state without respawning it.
+        yield return new WaitForSeconds(Mathf.Max(0f, penguinDeathDuration));
+        if (!penguinSlots.TryGetValue(slotId, out PenguinSlot slot) || slot == null)
+        {
+            yield break;
+        }
+
+        slot.DeathRoutine = null;
+        if (slot.Alive)
+        {
+            yield break;
+        }
+
+        slot.Visible = false;
+        SendPenguinVisualState(slotId, slot, snap: true, playDeath: false);
+    }
+
     public bool TryFindDamageableEquipment(Vector3 origin, Vector3 direction, float maxDistance, float projectileRadius, out int slotId, out float hitDistance, out Vector3 hitPoint)
     {
         // Find the nearest active field equipment drop touched by a server-approved projectile path.
@@ -2299,7 +2715,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
     public int ApplySplashDamage(Vector3 center, float radius, float baseDamage, ulong attackerClientId, float minimumMultiplier)
     {
-        // Apply distance-falloff splash damage to destructible boxes and field equipment drops.
+        // Apply distance-falloff splash damage to boxes, field equipment, and living event Penguins.
         if (!IsServer || radius <= 0f || baseDamage <= 0f)
         {
             return 0;
@@ -2328,6 +2744,16 @@ public class GameplayPickupManager : NetworkBehaviour
             }
         }
 
+        List<int> penguinTargets = new();
+        foreach (KeyValuePair<int, PenguinSlot> pair in penguinSlots)
+        {
+            PenguinSlot slot = pair.Value;
+            if (slot != null && slot.Visible && slot.Alive && slot.CurrentHealth > 0f)
+            {
+                penguinTargets.Add(pair.Key);
+            }
+        }
+
         for (int i = 0; i < boxTargets.Count; i++)
         {
             int slotId = boxTargets[i];
@@ -2345,6 +2771,17 @@ public class GameplayPickupManager : NetworkBehaviour
             PickupSlot slot = GetOrCreateSlot(slotId);
             if (TryResolveEquipmentSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage) &&
                 TryApplyEquipmentDamage(slotId, damage, attackerClientId))
+            {
+                hitCount++;
+            }
+        }
+
+        for (int i = 0; i < penguinTargets.Count; i++)
+        {
+            int slotId = penguinTargets[i];
+            PenguinSlot slot = GetOrCreatePenguinSlot(slotId);
+            if (TryResolvePenguinSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage, out Vector3 hitPoint) &&
+                TryApplyPenguinDamage(slotId, damage, attackerClientId, hitPoint))
             {
                 hitCount++;
             }
@@ -2380,6 +2817,22 @@ public class GameplayPickupManager : NetworkBehaviour
 
         Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight);
         float targetRadius = Mathf.Max(0.1f, equipmentHitRadius);
+        return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
+    }
+
+    private bool TryResolvePenguinSplashDamage(PenguinSlot slot, Vector3 center, float radius, float baseDamage, float minimumMultiplier, out float damage, out Vector3 hitPoint)
+    {
+        // Calculate explosion falloff against a living Penguin's visible body volume.
+        damage = 0f;
+        hitPoint = default;
+        if (slot == null || !slot.Visible || !slot.Alive || slot.CurrentHealth <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, penguinTargetHeight);
+        float targetRadius = Mathf.Max(0.1f, penguinHitRadius);
+        hitPoint = ResolveSplashSurfacePoint(center, targetPoint, targetRadius);
         return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
     }
 
@@ -3447,6 +3900,12 @@ public class GameplayPickupManager : NetworkBehaviour
             SetBoxVisualClientRpc(pair.Key, slot.Active, slot.Position, healthPercent, new FixedString64Bytes(slot.BoxId ?? string.Empty));
         }
 
+        foreach (KeyValuePair<int, PenguinSlot> pair in penguinSlots)
+        {
+            PenguinSlot slot = pair.Value;
+            SendPenguinVisualState(pair.Key, slot, snap: false, playDeath: slot.Visible && !slot.Alive);
+        }
+
         if (activeSuddenEvent != SuddenEventType.None && IsSuddenEventActive())
         {
             PlaySuddenEventBgmClientRpc(activeSuddenEvent);
@@ -3465,6 +3924,63 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Tell every client whether to reveal or keep hiding the underlying match BGM after an event ends.
         SoundManager.Instance?.StopSuddenEventBgm(revealBaseBgm);
+    }
+
+    private void SendPenguinVisualState(int slotId, PenguinSlot slot, bool snap, bool playDeath)
+    {
+        // Broadcast one authoritative Penguin pose while keeping the server free of presentation-only objects.
+        if (!IsServer || !IsSpawned || slot == null)
+        {
+            return;
+        }
+
+        SetPenguinVisualClientRpc(
+            slotId,
+            slot.Visible,
+            slot.Alive,
+            slot.Position,
+            slot.Forward,
+            slot.MoveSpeed,
+            snap,
+            playDeath);
+    }
+
+    [ClientRpc]
+    private void SetPenguinVisualClientRpc(int slotId, bool visible, bool alive, Vector3 position, Vector3 forward, float moveSpeed, bool snap, bool playDeath)
+    {
+        // Create or reuse a local Penguin visual and apply the latest server movement or death state.
+        PenguinSlot slot = GetOrCreatePenguinSlot(slotId);
+        slot.Visible = visible;
+        slot.Alive = alive;
+        slot.Position = position;
+        slot.Forward = forward;
+        slot.MoveSpeed = moveSpeed;
+
+        if (!visible)
+        {
+            slot.VisualController?.Hide();
+            return;
+        }
+
+        EnsurePenguinVisual(slotId, slot);
+        if (slot.VisualController == null)
+        {
+            return;
+        }
+
+        if (playDeath || !alive)
+        {
+            slot.VisualController.PlayDeath(position, forward);
+            return;
+        }
+
+        if (slot.Visual == null || !slot.Visual.activeSelf)
+        {
+            slot.VisualController.ShowAlive(position, forward);
+            return;
+        }
+
+        slot.VisualController.SetNetworkState(position, forward, moveSpeed, snap);
     }
 
     [ClientRpc]
@@ -4601,6 +5117,74 @@ public class GameplayPickupManager : NetworkBehaviour
         };
         slots.Add(slotId, slot);
         return slot;
+    }
+
+    private PenguinSlot GetOrCreatePenguinSlot(int slotId)
+    {
+        // Reuse stable slot records so visuals remain pooled across repeated event tests.
+        if (penguinSlots.TryGetValue(slotId, out PenguinSlot slot))
+        {
+            return slot;
+        }
+
+        slot = new PenguinSlot();
+        penguinSlots[slotId] = slot;
+        return slot;
+    }
+
+    private void EnsurePenguinVisual(int slotId, PenguinSlot slot)
+    {
+        // Lazily create one presentation-only prefab instance for each synchronized Penguin slot.
+        if (slot == null || slot.Visual != null)
+        {
+            return;
+        }
+
+        GameObject prefab = ResolvePenguinVisualPrefab();
+        GameObject visual;
+        if (prefab != null)
+        {
+            visual = Instantiate(prefab, transform);
+        }
+        else
+        {
+            visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            visual.transform.SetParent(transform, true);
+        }
+
+        visual.name = $"PenguinEventVisual_{slotId}";
+        PenguinEnemyVisual controller = visual.GetComponent<PenguinEnemyVisual>() ?? visual.AddComponent<PenguinEnemyVisual>();
+        Vector3 resolvedScale = Vector3.Scale(visual.transform.localScale, penguinVisualScale);
+        controller.Configure(resolvedScale, penguinVisualPositionSharpness, penguinTurnSpeed);
+        visual.SetActive(false);
+        slot.Visual = visual;
+        slot.VisualController = controller;
+    }
+
+    private GameObject ResolvePenguinVisualPrefab()
+    {
+        // Load the editable Penguin prefab once and preserve a fallback path for renamed inspector values.
+        if (triedLoadPenguinVisualPrefab)
+        {
+            return resolvedPenguinVisualPrefab;
+        }
+
+        triedLoadPenguinVisualPrefab = true;
+        string resourcePath = string.IsNullOrWhiteSpace(penguinVisualResourcePath)
+            ? DefaultPenguinVisualResourcePath
+            : penguinVisualResourcePath.Trim();
+        resolvedPenguinVisualPrefab = Resources.Load<GameObject>(resourcePath);
+        if (resolvedPenguinVisualPrefab == null && resourcePath != DefaultPenguinVisualResourcePath)
+        {
+            resolvedPenguinVisualPrefab = Resources.Load<GameObject>(DefaultPenguinVisualResourcePath);
+        }
+
+        if (resolvedPenguinVisualPrefab == null)
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Penguin prefab not found at Resources/{resourcePath}; using a capsule fallback.");
+        }
+
+        return resolvedPenguinVisualPrefab;
     }
 
     private BoxSlot GetOrCreateBoxSlot(int slotId)

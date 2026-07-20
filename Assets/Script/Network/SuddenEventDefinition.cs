@@ -4,7 +4,8 @@ public enum SuddenEventType : byte
 {
     None = 0,
     EndlessAutoFire = 1,
-    MixedStatueLoot = 2
+    MixedStatueLoot = 2,
+    PenguinFeast = 3
 }
 
 [CreateAssetMenu(fileName = "SuddenEventDefinition", menuName = "WoopRider/Sudden Event Definition")]
