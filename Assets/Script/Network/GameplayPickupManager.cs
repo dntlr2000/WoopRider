@@ -12,6 +12,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultAttackUpEffectResourcePath = "Effects/CustomEffects/AttackUp";
     private const string DefaultDefenceUpEffectResourcePath = "Effects/CustomEffects/DefenceUp";
     private const string DefaultBoxHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Stones hit";
+    private const string DefaultPenguinHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit";
+    private const string DefaultPenguinDisappearEffectResourcePath = "Effects/CustomEffects/Penguin_Disappear Variant";
     private const string DefaultBombBoxExplosionEffectResourcePath = "Effects/CustomEffects/Item_ExplosionA Variant";
     private const string DefaultPenguinVisualResourcePath = "Prefabs/Enemys/Penguin_enemy";
     private const string DefaultFinalMatchRuleResourcesPath = "FinalMatchRules";
@@ -328,6 +330,21 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private Vector3 penguinVisualScale = new(0.25f, 0.25f, 0.25f);
     [SerializeField] private float penguinDeathDuration = 2f;
 
+    [Header("Penguin Hit Effect")]
+    [SerializeField] private GameObject penguinHitEffectPrefab;
+    [SerializeField] private Vector3 penguinHitEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float penguinHitEffectScale = 1f;
+    [SerializeField] private float penguinHitEffectLifetime = 2f;
+
+    [Header("Penguin Disappear Effect")]
+    [SerializeField] private GameObject penguinDisappearEffectPrefab;
+    [SerializeField] private Vector3 penguinDisappearEffectOffset = new(0f, 0.7f, 0f);
+    [SerializeField] private Vector3 penguinDisappearEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float penguinDisappearEffectScale = 1f;
+    [SerializeField] private float penguinDisappearEffectLifetime = 3f;
+
     [Header("Stat Pickup Visual")]
     [SerializeField] private string statPickupVisualResourcePath = "fbx/Stat_Item/Stat_Item";
     [SerializeField] private string statPickupTextureResourceRoot = "fbx/Stat_Item";
@@ -423,6 +440,14 @@ public class GameplayPickupManager : NetworkBehaviour
     [Min(0.01f)]
     [SerializeField] private float boxHitEffectScale = 1f;
     [SerializeField] private float boxHitEffectLifetime = 2f;
+
+    [Header("Box Sound Effects")]
+    [SerializeField] private AudioClip boxHitSfxClip;
+    [SerializeField] private AudioClip boxBreakSfxClip;
+    [Range(0f, 1f)]
+    [SerializeField] private float boxHitSfxVolumeScale = 1f;
+    [Range(0f, 1f)]
+    [SerializeField] private float boxBreakSfxVolumeScale = 1f;
 
     [Header("Bomb Box")]
     [SerializeField] private float bombBoxExplosionRadius = 2f;
@@ -526,6 +551,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private GameObject resolvedDefaultAttackUpEffectPrefab;
     private GameObject resolvedDefaultDefenceUpEffectPrefab;
     private GameObject resolvedDefaultBoxHitEffectPrefab;
+    private GameObject resolvedDefaultPenguinHitEffectPrefab;
+    private GameObject resolvedDefaultPenguinDisappearEffectPrefab;
     private GameObject resolvedDefaultBombBoxExplosionEffectPrefab;
     private GameObject resolvedPenguinVisualPrefab;
     private Texture2D resolvedBasicBoxCleanTexture;
@@ -540,6 +567,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private bool triedLoadDefaultAttackUpEffectPrefab;
     private bool triedLoadDefaultDefenceUpEffectPrefab;
     private bool triedLoadDefaultBoxHitEffectPrefab;
+    private bool triedLoadDefaultPenguinHitEffectPrefab;
+    private bool triedLoadDefaultPenguinDisappearEffectPrefab;
     private bool triedLoadDefaultBombBoxExplosionEffectPrefab;
     private bool triedLoadPenguinVisualPrefab;
     private bool triedLoadBasicBoxTextures;
@@ -2525,11 +2554,12 @@ public class GameplayPickupManager : NetworkBehaviour
 
         slot.CurrentHealth = Mathf.Max(0f, slot.CurrentHealth - damage);
         float healthPercent = slot.MaxHealth > 0f ? Mathf.Clamp01(slot.CurrentHealth / slot.MaxHealth) : 0f;
+        bool destroyed = slot.CurrentHealth <= 0f;
         SetBoxVisualClientRpc(slotId, true, slot.Position, healthPercent, new FixedString64Bytes(slot.BoxId ?? string.Empty));
-        PlayBoxHitEffectClientRpc(ResolveBoxHitEffectPoint(slot, hitPoint));
+        PlayBoxHitEffectClientRpc(ResolveBoxHitEffectPoint(slot, hitPoint), destroyed);
         Debug.Log($"[GameplayPickupManager] Box damaged slot={slotId} attacker={attackerClientId} damage={damage:0.0} health={slot.CurrentHealth:0.0}");
 
-        if (slot.CurrentHealth <= 0f)
+        if (destroyed)
         {
             BreakBoxItem(slotId, attackerClientId);
             return true;
@@ -2592,7 +2622,13 @@ public class GameplayPickupManager : NetworkBehaviour
 
     public bool TryApplyPenguinDamage(int slotId, float damage, ulong attackerClientId, Vector3 hitPoint)
     {
-        // Apply server-authoritative damage and trigger one death-and-loot sequence at zero health.
+        // Preserve the existing damage API with a stable fallback effect direction.
+        return TryApplyPenguinDamage(slotId, damage, attackerClientId, hitPoint, Vector3.forward);
+    }
+
+    public bool TryApplyPenguinDamage(int slotId, float damage, ulong attackerClientId, Vector3 hitPoint, Vector3 hitDirection)
+    {
+        // Apply server-authoritative damage, replicate hit feedback, and trigger one death sequence at zero health.
         if (!IsServer || damage <= 0f || !penguinSlots.TryGetValue(slotId, out PenguinSlot slot) ||
             slot == null || !slot.Visible || !slot.Alive || slot.CurrentHealth <= 0f)
         {
@@ -2600,6 +2636,7 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         slot.CurrentHealth = Mathf.Max(0f, slot.CurrentHealth - damage);
+        PlayPenguinHitEffectClientRpc(ResolvePenguinHitEffectPoint(slot, hitPoint), ResolvePenguinHitEffectDirection(hitDirection));
         Debug.Log($"[GameplayPickupManager] Penguin damaged slot={slotId} attacker={attackerClientId} damage={damage:0.0} health={slot.CurrentHealth:0.0}/{slot.MaxHealth:0.0} point={hitPoint}");
         if (slot.CurrentHealth <= 0f)
         {
@@ -2647,6 +2684,7 @@ public class GameplayPickupManager : NetworkBehaviour
             yield break;
         }
 
+        PlayPenguinDisappearEffectClientRpc(ResolvePenguinDisappearEffectPoint(slot));
         slot.Visible = false;
         SendPenguinVisualState(slotId, slot, snap: true, playDeath: false);
     }
@@ -2781,7 +2819,7 @@ public class GameplayPickupManager : NetworkBehaviour
             int slotId = penguinTargets[i];
             PenguinSlot slot = GetOrCreatePenguinSlot(slotId);
             if (TryResolvePenguinSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage, out Vector3 hitPoint) &&
-                TryApplyPenguinDamage(slotId, damage, attackerClientId, hitPoint))
+                TryApplyPenguinDamage(slotId, damage, attackerClientId, hitPoint, ResolvePenguinHitEffectDirection(hitPoint - center)))
             {
                 hitCount++;
             }
@@ -4105,10 +4143,39 @@ public class GameplayPickupManager : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void PlayBoxHitEffectClientRpc(Vector3 position)
+    private void PlayBoxHitEffectClientRpc(Vector3 position, bool destroyed)
     {
-        // Spawn the stone hit VFX on every client when a server-approved attack damages a box.
+        // Spawn stone feedback and play either the damage or destruction sound on every client.
         PlayBoxHitOneShotEffect(ResolveBoxHitEffectPrefab(), position);
+        PlayBoxDamageSound(destroyed);
+    }
+
+    private void PlayBoxDamageSound(bool destroyed)
+    {
+        // Route synchronized statue damage sounds through the shared client SFX channel.
+        SoundManager soundManager = SoundManager.Instance;
+        if (soundManager == null)
+        {
+            return;
+        }
+
+        AudioClip clip = destroyed ? boxBreakSfxClip : boxHitSfxClip;
+        float volumeScale = destroyed ? boxBreakSfxVolumeScale : boxHitSfxVolumeScale;
+        soundManager.PlaySfx(clip, volumeScale);
+    }
+
+    [ClientRpc]
+    private void PlayPenguinHitEffectClientRpc(Vector3 position, Vector3 hitDirection)
+    {
+        // Spawn the same green directional hit VFX used by players for every damaged Penguin.
+        PlayPenguinHitOneShotEffect(ResolvePenguinHitEffectPrefab(), position, hitDirection);
+    }
+
+    [ClientRpc]
+    private void PlayPenguinDisappearEffectClientRpc(Vector3 position)
+    {
+        // Spawn the configured disappearance VFX when a defeated Penguin leaves the field.
+        PlayPenguinDisappearOneShotEffect(ResolvePenguinDisappearEffectPrefab(), position);
     }
 
     [ClientRpc]
@@ -4180,6 +4247,72 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         Destroy(effectObject, Mathf.Max(0.1f, boxHitEffectLifetime));
+    }
+
+    private void PlayPenguinHitOneShotEffect(GameObject effectPrefab, Vector3 position, Vector3 hitDirection)
+    {
+        // Instantiate, orient, play, and clean up one Penguin green-hit effect.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        Vector3 resolvedDirection = ResolvePenguinHitEffectDirection(hitDirection);
+        Quaternion rotation = Quaternion.LookRotation(resolvedDirection, Vector3.up) * Quaternion.Euler(penguinHitEffectEulerOffset);
+        GameObject effectObject = Instantiate(effectPrefab, position, rotation);
+        effectObject.name = "PenguinGreenHitEffect";
+        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, penguinHitEffectScale);
+        effectObject.SetActive(true);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, penguinHitEffectLifetime));
+    }
+
+    private void PlayPenguinDisappearOneShotEffect(GameObject effectPrefab, Vector3 position)
+    {
+        // Instantiate, play, and clean up one Penguin disappearance effect.
+        if (effectPrefab == null)
+        {
+            return;
+        }
+
+        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(penguinDisappearEffectEulerOffset));
+        effectObject.name = "PenguinDisappearEffect";
+        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, penguinDisappearEffectScale);
+        effectObject.SetActive(true);
+
+        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
+        for (int i = 0; i < particleSystems.Length; i++)
+        {
+            ParticleSystem particleSystem = particleSystems[i];
+            if (particleSystem == null)
+            {
+                continue;
+            }
+
+            particleSystem.gameObject.SetActive(true);
+            ParticleSystem.MainModule main = particleSystem.main;
+            main.loop = false;
+            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            particleSystem.Play(withChildren: false);
+        }
+
+        Destroy(effectObject, Mathf.Max(0.1f, penguinDisappearEffectLifetime));
     }
 
     private void PlayBombBoxExplosionOneShotEffect(GameObject effectPrefab, Vector3 position)
@@ -4309,6 +4442,70 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         return resolvedDefaultBoxHitEffectPrefab;
+    }
+
+    private GameObject ResolvePenguinHitEffectPrefab()
+    {
+        // Use an inspector override first, then load the same Green hit resource used by players.
+        if (penguinHitEffectPrefab != null)
+        {
+            return penguinHitEffectPrefab;
+        }
+
+        if (!triedLoadDefaultPenguinHitEffectPrefab)
+        {
+            triedLoadDefaultPenguinHitEffectPrefab = true;
+            resolvedDefaultPenguinHitEffectPrefab = Resources.Load<GameObject>(DefaultPenguinHitEffectResourcePath);
+        }
+
+        return resolvedDefaultPenguinHitEffectPrefab;
+    }
+
+    private GameObject ResolvePenguinDisappearEffectPrefab()
+    {
+        // Use an inspector override first, then load Penguin_Disappear Variant from Resources.
+        if (penguinDisappearEffectPrefab != null)
+        {
+            return penguinDisappearEffectPrefab;
+        }
+
+        if (!triedLoadDefaultPenguinDisappearEffectPrefab)
+        {
+            triedLoadDefaultPenguinDisappearEffectPrefab = true;
+            resolvedDefaultPenguinDisappearEffectPrefab = Resources.Load<GameObject>(DefaultPenguinDisappearEffectResourcePath);
+        }
+
+        return resolvedDefaultPenguinDisappearEffectPrefab;
+    }
+
+    private Vector3 ResolvePenguinDisappearEffectPoint(PenguinSlot slot)
+    {
+        // Place the disappearance effect around the visible center while keeping an editable world offset.
+        return slot != null ? slot.Position + penguinDisappearEffectOffset : penguinDisappearEffectOffset;
+    }
+
+    private Vector3 ResolvePenguinHitEffectPoint(PenguinSlot slot, Vector3 requestedPoint)
+    {
+        // Use the server impact point, falling back to the visible center of the Penguin body.
+        if (IsFinite(requestedPoint))
+        {
+            return requestedPoint;
+        }
+
+        return slot != null
+            ? slot.Position + Vector3.up * Mathf.Max(0f, penguinTargetHeight)
+            : Vector3.zero;
+    }
+
+    private static Vector3 ResolvePenguinHitEffectDirection(Vector3 requestedDirection)
+    {
+        // Normalize the incoming attack direction and provide a stable orientation when it is unavailable.
+        if (IsFinite(requestedDirection) && requestedDirection.sqrMagnitude > 0.0001f)
+        {
+            return requestedDirection.normalized;
+        }
+
+        return Vector3.forward;
     }
 
     private GameObject ResolveBombBoxExplosionEffectPrefab()

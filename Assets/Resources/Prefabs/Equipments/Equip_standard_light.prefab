@@ -1,0 +1,96 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &8422945719649936654
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8228183282467491990}
+  m_Layer: 0
+  m_Name: Equip_standard_light
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8228183282467491990
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8422945719649936654}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -7.7327366, y: 0.64, z: -3.625}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 761574222032232425}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1001 &3182009107775528928
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 8228183282467491990}
+    m_Modifications:
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 0.9587783
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0.118288405
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0.1539057
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: -0.20752124
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 16.9
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 14.9
+      objectReference: {fileID: 0}
+    - target: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: -22.2
+      objectReference: {fileID: 0}
+    - target: {fileID: 5701692471366909018, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+      propertyPath: m_Name
+      value: item_standardgun_light
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+--- !u!4 &761574222032232425 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 2790371210131128329, guid: 6af58b361267f244a957c7a3a4283c43, type: 3}
+  m_PrefabInstance: {fileID: 3182009107775528928}
+  m_PrefabAsset: {fileID: 0}

@@ -1141,7 +1141,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 equipmentHitPoint,
                 penguinSlotId,
                 penguinHitPoint,
-                damage);
+                damage,
+                (packet.TargetPoint - packet.Origin).normalized);
             if (appliedDamage)
             {
                 impactPoint = nearestPickupKind == 1
@@ -1359,7 +1360,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         Vector3 equipmentHitPoint,
         int penguinSlotId,
         Vector3 penguinHitPoint,
-        float damage)
+        float damage,
+        Vector3 hitDirection)
     {
         // Apply damage to the nearest server-managed pickup target hit by a line attack path.
         GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
@@ -1380,7 +1382,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return true;
         }
 
-        if (pickupKind == 3 && pickupManager.TryApplyPenguinDamage(penguinSlotId, damage, OwnerClientId, penguinHitPoint))
+        if (pickupKind == 3 && pickupManager.TryApplyPenguinDamage(penguinSlotId, damage, OwnerClientId, penguinHitPoint, hitDirection))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit Penguin attacker={OwnerClientId} slot={penguinSlotId} point={penguinHitPoint}");
             return true;

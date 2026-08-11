@@ -27,4 +27,4 @@ MonoBehaviour:
     projectileLifeTime: 4
     projectileVisualPrefab: {fileID: 0}
     projectileVisualResourcePath: fbx/Equip_Bullets/BasicBullet
-  visualPrefab: {fileID: 0}
+  visualPrefab: {fileID: 5369885864573157607, guid: 96e0223161b273c4fb7fb94f8415541d, type: 3}

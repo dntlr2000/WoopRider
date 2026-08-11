@@ -49,4 +49,4 @@ MonoBehaviour:
     explosionEffectScale: 1
     projectileVisualPrefab: {fileID: 0}
     projectileVisualResourcePath: fbx/Equip_Bullets/BasicBullet
-  visualPrefab: {fileID: 0}
+  visualPrefab: {fileID: 3680331418973371774, guid: 0f7be6920c3f6f84b8117f1cccf05d44, type: 3}

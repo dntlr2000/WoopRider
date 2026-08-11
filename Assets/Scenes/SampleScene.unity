@@ -5171,6 +5171,10 @@ MonoBehaviour:
   boxHitEffectEulerOffset: {x: 0, y: 0, z: 0}
   boxHitEffectScale: 1
   boxHitEffectLifetime: 2
+  boxHitSfxClip: {fileID: 8300000, guid: e3868084e1fe91f419bef3bf01af7de4, type: 3}
+  boxBreakSfxClip: {fileID: 8300000, guid: 7829ce4de25c47e4ea93a8ebe5b8a96e, type: 3}
+  boxHitSfxVolumeScale: 1
+  boxBreakSfxVolumeScale: 1
   bombBoxExplosionRadius: 2
   bombBoxExplosionDamage: 100
   bombBoxExplosionMinimumDamageMultiplier: 0.4

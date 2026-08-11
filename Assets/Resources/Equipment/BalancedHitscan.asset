@@ -42,4 +42,4 @@ MonoBehaviour:
     projectileLifeTime: 0
     projectileVisualPrefab: {fileID: 0}
     projectileVisualResourcePath: 
-  visualPrefab: {fileID: 0}
+  visualPrefab: {fileID: 8276056816321970600, guid: 1448ae8a89804024a8306ae998e8fbe6, type: 3}
