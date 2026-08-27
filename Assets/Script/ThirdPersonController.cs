@@ -5,6 +5,8 @@ using UnityEngine.InputSystem;
 [RequireComponent(typeof(CharacterController))]
 public class ThirdPersonController : MonoBehaviour
 {
+    private const float LaunchGroundedGraceDuration = 0.15f;
+
     [System.Serializable]
     public class PlayerStats
     {
@@ -40,6 +42,10 @@ public class ThirdPersonController : MonoBehaviour
     private float movementRotationLockedUntil;
     private float cameraFacingLockedUntil;
     private Transform cameraFacingLockTransform;
+    private Vector3 launchHorizontalVelocity;
+    private bool launchMotionActive;
+    private bool launchBecameAirborne;
+    private float launchStartedAt;
 
     public float MoveSpeed => GetModifiedStat(PlayerStatType.MoveSpeed, stats.moveSpeed);
     public float JumpForce => GetModifiedStat(PlayerStatType.JumpForce, stats.jumpForce);
@@ -50,6 +56,24 @@ public class ThirdPersonController : MonoBehaviour
     public float FireRate => GetModifiedStat(PlayerStatType.FireRate, stats.fireRate);
     public bool HasLocalControl => ResolveHasLocalControl();
     public bool IsCameraFacingLocked => Time.time < cameraFacingLockedUntil;
+
+    public bool ApplyLaunch(Vector3 worldDirection, float launchStrength)
+    {
+        // Apply a jump-platform velocity only to the locally controlled player instance.
+        if (!HasLocalControl || launchStrength <= 0f || worldDirection.sqrMagnitude <= 0.0001f)
+        {
+            return false;
+        }
+
+        Vector3 launchVelocity = worldDirection.normalized * launchStrength;
+        launchHorizontalVelocity = Vector3.ProjectOnPlane(launchVelocity, Vector3.up);
+        verticalVelocity = launchVelocity.y;
+        launchMotionActive = true;
+        launchBecameAirborne = false;
+        launchStartedAt = Time.time;
+        animationDriver?.TriggerJump();
+        return true;
+    }
 
     public bool FaceCameraForwardImmediate(Transform facingCamera = null)
     {
@@ -156,7 +180,7 @@ public class ThirdPersonController : MonoBehaviour
         camRight.Normalize();
 
         Vector3 move = (camForward * vertical + camRight * horizontal).normalized;
-        Vector3 velocity = move * MoveSpeed;
+        Vector3 velocity = move * MoveSpeed + launchHorizontalVelocity;
 
         if (move.sqrMagnitude > 0.001f && rotateCharacterToMoveDirection && !IsMovementRotationLocked())
         {
@@ -181,6 +205,7 @@ public class ThirdPersonController : MonoBehaviour
         velocity.y = verticalVelocity;
 
         controller.Move(velocity * Time.deltaTime);
+        UpdateLaunchMotionState();
     }
 
     private void HandleActionDisabledMovement()
@@ -192,7 +217,32 @@ public class ThirdPersonController : MonoBehaviour
         }
 
         verticalVelocity += gravity * Time.deltaTime;
-        controller.Move(Vector3.up * verticalVelocity * Time.deltaTime);
+        Vector3 velocity = launchHorizontalVelocity + Vector3.up * verticalVelocity;
+        controller.Move(velocity * Time.deltaTime);
+        UpdateLaunchMotionState();
+    }
+
+    private void UpdateLaunchMotionState()
+    {
+        // Retain the pad's horizontal momentum through the jump, then release it on landing.
+        if (!launchMotionActive)
+        {
+            return;
+        }
+
+        if (!controller.isGrounded)
+        {
+            launchBecameAirborne = true;
+            return;
+        }
+
+        bool graceElapsed = Time.time - launchStartedAt >= LaunchGroundedGraceDuration;
+        if (launchBecameAirborne || graceElapsed)
+        {
+            launchHorizontalVelocity = Vector3.zero;
+            launchMotionActive = false;
+            launchBecameAirborne = false;
+        }
     }
 
     private Quaternion GetCameraYawRotation()

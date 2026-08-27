@@ -11,6 +11,11 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultHealingPickupEffectResourcePath = "Effects/CustomEffects/Healing_OneShot";
     private const string DefaultAttackUpEffectResourcePath = "Effects/CustomEffects/AttackUp";
     private const string DefaultDefenceUpEffectResourcePath = "Effects/CustomEffects/DefenceUp";
+    private const string DefaultBasicHealVisualResourcePath = "ImageSource/Items/icon_medicine_bottle";
+    private const string DefaultAttackPowerBuffVisualResourcePath = "ImageSource/Items/potion_atk";
+    private const string DefaultDamageReductionBuffVisualResourcePath = "ImageSource/Items/potion_def";
+    private const string DefaultMoveSpeedBuffVisualResourcePath = "ImageSource/Items/potion_spd";
+    private const string DefaultEquipmentHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit";
     private const string DefaultBoxHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Stones hit";
     private const string DefaultPenguinHitEffectResourcePath = "Effects/Hovl Studio/Magic effects pack/Prefabs/Hits and explosions/Green hit";
     private const string DefaultPenguinDisappearEffectResourcePath = "Effects/CustomEffects/Penguin_Disappear Variant";
@@ -294,6 +299,23 @@ public class GameplayPickupManager : NetworkBehaviour
         FunctionalPickupType.AutoFireBuff
     };
 
+    [Header("Functional Pickup Visual")]
+    [SerializeField] private Sprite basicHealVisualSprite;
+    [SerializeField] private string basicHealVisualResourcePath = DefaultBasicHealVisualResourcePath;
+    [Min(0.01f)]
+    [SerializeField] private float basicHealVisualWorldHeight = 1.1f;
+    [SerializeField] private Vector3 basicHealVisualLocalOffset = new(0f, 0.05f, 0f);
+    [SerializeField] private Sprite attackPowerBuffVisualSprite;
+    [SerializeField] private string attackPowerBuffVisualResourcePath = DefaultAttackPowerBuffVisualResourcePath;
+    [SerializeField] private Sprite damageReductionBuffVisualSprite;
+    [SerializeField] private string damageReductionBuffVisualResourcePath = DefaultDamageReductionBuffVisualResourcePath;
+    [SerializeField] private Sprite moveSpeedBuffVisualSprite;
+    [SerializeField] private string moveSpeedBuffVisualResourcePath = DefaultMoveSpeedBuffVisualResourcePath;
+    [Min(0.01f)]
+    [SerializeField] private float buffPotionVisualWorldHeight = 1.1f;
+    [SerializeField] private Vector3 buffPotionVisualLocalOffset = new(0f, 0.05f, 0f);
+    [SerializeField] private int functionalPickupSpriteSortingOrder;
+
     [Header("Sudden Events")]
     [SerializeField] private bool suddenEventsEnabled = true;
     [SerializeField] private float suddenEventStartDelay = 10f;
@@ -376,6 +398,12 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private float boxLootScatterRadius = 1.4f;
     [SerializeField] private string basicBoxVisualResourcePath = "fbx/Bangae_Statue";
     [SerializeField] private Vector3 basicBoxVisualScale = new(2f, 2f, 2f);
+
+    [Header("Box Collision")]
+    [SerializeField] private bool boxBlocksPlayers = true;
+    [SerializeField] private Vector3 basicBoxColliderSizeMultiplier = Vector3.one;
+    [SerializeField] private Vector3 basicBoxColliderCenterOffset;
+
     [SerializeField] private string basicBoxCleanTextureResourcePath = "fbx/BgStatue_Clean";
     [SerializeField] private string basicBoxHalfBreakTextureResourcePath = "fbx/BgStatue_Half-break";
     [SerializeField] private string basicBoxFullBreakTextureResourcePath = "fbx/BgStatue_Full-break";
@@ -488,6 +516,13 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private float equipmentHitRadius = 0.85f;
     [SerializeField] private float equipmentTargetHeight = 0.35f;
 
+    [Header("Field Equipment Hit Effect")]
+    [SerializeField] private GameObject equipmentHitEffectPrefab;
+    [SerializeField] private Vector3 equipmentHitEffectEulerOffset;
+    [Min(0.01f)]
+    [SerializeField] private float equipmentHitEffectScale = 1f;
+    [SerializeField] private float equipmentHitEffectLifetime = 2f;
+
     [Header("Equipment Low Health Effect")]
     [SerializeField] private ParticleSystem equipmentLowHealthSparkPrefab;
     [Range(0f, 1f)]
@@ -550,11 +585,16 @@ public class GameplayPickupManager : NetworkBehaviour
     private GameObject resolvedDefaultHealingPickupEffectPrefab;
     private GameObject resolvedDefaultAttackUpEffectPrefab;
     private GameObject resolvedDefaultDefenceUpEffectPrefab;
+    private GameObject resolvedDefaultEquipmentHitEffectPrefab;
     private GameObject resolvedDefaultBoxHitEffectPrefab;
     private GameObject resolvedDefaultPenguinHitEffectPrefab;
     private GameObject resolvedDefaultPenguinDisappearEffectPrefab;
     private GameObject resolvedDefaultBombBoxExplosionEffectPrefab;
     private GameObject resolvedPenguinVisualPrefab;
+    private Sprite resolvedBasicHealVisualSprite;
+    private Sprite resolvedAttackPowerBuffVisualSprite;
+    private Sprite resolvedDamageReductionBuffVisualSprite;
+    private Sprite resolvedMoveSpeedBuffVisualSprite;
     private Texture2D resolvedBasicBoxCleanTexture;
     private Texture2D resolvedBasicBoxHalfBreakTexture;
     private Texture2D resolvedBasicBoxFullBreakTexture;
@@ -566,11 +606,16 @@ public class GameplayPickupManager : NetworkBehaviour
     private bool triedLoadDefaultHealingPickupEffectPrefab;
     private bool triedLoadDefaultAttackUpEffectPrefab;
     private bool triedLoadDefaultDefenceUpEffectPrefab;
+    private bool triedLoadDefaultEquipmentHitEffectPrefab;
     private bool triedLoadDefaultBoxHitEffectPrefab;
     private bool triedLoadDefaultPenguinHitEffectPrefab;
     private bool triedLoadDefaultPenguinDisappearEffectPrefab;
     private bool triedLoadDefaultBombBoxExplosionEffectPrefab;
     private bool triedLoadPenguinVisualPrefab;
+    private bool triedLoadBasicHealVisualSprite;
+    private bool triedLoadAttackPowerBuffVisualSprite;
+    private bool triedLoadDamageReductionBuffVisualSprite;
+    private bool triedLoadMoveSpeedBuffVisualSprite;
     private bool triedLoadBasicBoxTextures;
     private bool triedLoadStatPickupVisualPrefab;
     private bool warnedMissingStatPickupMaterial;
@@ -915,6 +960,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         string title = ResolveSuddenEventTitle(selection);
         matchStateController?.ShowNoticeToAll(title, 4f);
+        PlaySuddenEventWarningClientRpc();
         PlaySuddenEventBgmClientRpc(eventKind);
         Debug.Log($"[GameplayPickupManager] Sudden event started kind={eventKind} duration={duration:0.0}s title={title}");
         UpdateActiveSuddenEvent();
@@ -1869,6 +1915,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         if (slot.Kind == PickupKind.FinalObjective)
         {
+            PlayPickupSfxForClient(clientId, PickupSfxKind.FinalObjective);
             DeactivatePickup(slotId);
             matchStateController?.CompleteFinalObjectiveByClient(clientId);
             Debug.Log($"[GameplayPickupManager] Final objective collected clientId={clientId}");
@@ -1884,6 +1931,7 @@ public class GameplayPickupManager : NetworkBehaviour
             }
 
             PlayFunctionalPickupEffect(clientId, collectedFunctionalType);
+            PlayPickupSfxForClient(clientId, ResolveFunctionalPickupSfxKind(collectedFunctionalType));
             DeactivatePickup(slotId);
             ScheduleContactPickupRespawn(slotId, slot);
             Debug.Log($"[GameplayPickupManager] Functional pickup collected clientId={clientId} type={slot.FunctionalType}");
@@ -1906,6 +1954,7 @@ public class GameplayPickupManager : NetworkBehaviour
             PlayPickupEffectForClient(clientId, PickupEffectKind.StatBuff);
         }
 
+        PlayPickupSfxForClient(clientId, PickupSfxKind.Stat);
         DeactivatePickup(slotId);
         ScheduleContactPickupRespawn(slotId, slot);
 
@@ -1947,6 +1996,39 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         // Attack, defense, movement, and auto-fire buff state is driven by NetworkPlayerCombatState.
+    }
+
+    private static PickupSfxKind ResolveFunctionalPickupSfxKind(FunctionalPickupType functionalType)
+    {
+        // Keep each functional pickup on an independent sound category for later audio replacement.
+        return functionalType switch
+        {
+            FunctionalPickupType.BasicHeal => PickupSfxKind.Healing,
+            FunctionalPickupType.AttackPowerBuff => PickupSfxKind.AttackBuff,
+            FunctionalPickupType.DamageReductionBuff => PickupSfxKind.DefenceBuff,
+            FunctionalPickupType.MoveSpeedBuff => PickupSfxKind.MoveSpeedBuff,
+            FunctionalPickupType.AutoFireBuff => PickupSfxKind.AutoFireBuff,
+            _ => PickupSfxKind.Stat
+        };
+    }
+
+    private void PlayPickupSfxForClient(ulong clientId, PickupSfxKind kind)
+    {
+        // Send pickup audio only to the client whose server-authoritative collection succeeded.
+        if (!IsServer || NetworkManager.Singleton == null ||
+            !NetworkManager.Singleton.ConnectedClients.ContainsKey(clientId))
+        {
+            return;
+        }
+
+        ClientRpcParams rpcParams = new()
+        {
+            Send = new ClientRpcSendParams
+            {
+                TargetClientIds = new[] { clientId }
+            }
+        };
+        PlayPickupSfxClientRpc(kind, rpcParams);
     }
 
     private void PlayPickupEffectForClient(ulong clientId, PickupEffectKind effectKind)
@@ -2360,6 +2442,7 @@ public class GameplayPickupManager : NetworkBehaviour
         if (incomingEquipment != null && NetworkPlayerEquipmentState.TryEquipClient(clientId, incomingEquipment))
         {
             NetworkPlayerCombatState.ResetClientForEquippedHealthPercent(clientId, incomingHealthPercent);
+            PlayPickupSfxForClient(clientId, PickupSfxKind.Equipment);
             Debug.Log($"[GameplayPickupManager] Hooked equipment equipped clientId={clientId} equipment={incomingEquipment.EquipmentId} healthPercent={incomingHealthPercent:0.00}");
         }
         else
@@ -2423,6 +2506,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         NetworkPlayerCombatState.ResetClientForEquippedHealthPercent(stealerClientId, stolenHealthPercent);
         NetworkPlayerCombatState.TryHealPercent(stealerClientId, Mathf.Clamp01(hookStealHealPercent), "hook-steal");
+        PlayPickupSfxForClient(stealerClientId, PickupSfxKind.Equipment);
         DropPreviousEquipmentFromHookSteal(stealerObject, stealerClientId, previousEquipment, previousHealthPercent);
         SendHookStealNotices(victimClientId, stealerClientId, stolenEquipment);
         Debug.Log($"[GameplayPickupManager] Player equipment stolen stealer={stealerClientId} victim={victimClientId} equipment={stolenEquipment.EquipmentId} stolenHealthPercent={stolenHealthPercent:0.00}");
@@ -2725,7 +2809,15 @@ public class GameplayPickupManager : NetworkBehaviour
 
     public bool TryApplyEquipmentDamage(int slotId, float damage, ulong attackerClientId)
     {
-        // Apply server-authoritative damage to a field equipment drop and destroy it at zero health.
+        // Preserve callers without impact data by placing feedback at the field equipment target point.
+        PickupSlot slot = GetOrCreateSlot(slotId);
+        Vector3 fallbackHitPoint = slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight);
+        return TryApplyEquipmentDamage(slotId, damage, attackerClientId, fallbackHitPoint, Vector3.forward);
+    }
+
+    public bool TryApplyEquipmentDamage(int slotId, float damage, ulong attackerClientId, Vector3 hitPoint, Vector3 hitDirection)
+    {
+        // Apply server-authoritative damage and replicate player-style impact feedback at the approved hit point.
         if (!IsServer || damage <= 0f)
         {
             return false;
@@ -2741,6 +2833,9 @@ public class GameplayPickupManager : NetworkBehaviour
         slot.EquipmentCurrentHealth = Mathf.Max(0f, slot.EquipmentCurrentHealth - damage);
         slot.EquipmentHealthPercent = ResolveEquipmentHealthPercent(slot);
         SetEquipmentHealthVisualClientRpc(slotId, slot.EquipmentHealthPercent);
+        PlayFieldEquipmentHitEffectClientRpc(
+            ResolveEquipmentHitEffectPoint(slot, hitPoint),
+            ResolveEquipmentHitEffectDirection(hitDirection));
         Debug.Log($"[GameplayPickupManager] Equipment damaged slot={slotId} attacker={attackerClientId} equipment={slot.EquipmentId} damage={damage:0.0} health={slot.EquipmentCurrentHealth:0.0}/{slot.EquipmentMaxHealth:0.0}");
 
         if (slot.EquipmentCurrentHealth <= 0f)
@@ -2753,7 +2848,20 @@ public class GameplayPickupManager : NetworkBehaviour
 
     public int ApplySplashDamage(Vector3 center, float radius, float baseDamage, ulong attackerClientId, float minimumMultiplier)
     {
-        // Apply distance-falloff splash damage to boxes, field equipment, and living event Penguins.
+        // Preserve existing callers that only need the total number of damaged pickup targets.
+        return ApplySplashDamage(center, radius, baseDamage, attackerClientId, minimumMultiplier, out _);
+    }
+
+    public int ApplySplashDamage(
+        Vector3 center,
+        float radius,
+        float baseDamage,
+        ulong attackerClientId,
+        float minimumMultiplier,
+        out int penguinHitCount)
+    {
+        // Apply splash damage and separately report Penguin hits for one attacker confirmation sound.
+        penguinHitCount = 0;
         if (!IsServer || radius <= 0f || baseDamage <= 0f)
         {
             return 0;
@@ -2807,8 +2915,8 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             int slotId = equipmentTargets[i];
             PickupSlot slot = GetOrCreateSlot(slotId);
-            if (TryResolveEquipmentSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage) &&
-                TryApplyEquipmentDamage(slotId, damage, attackerClientId))
+            if (TryResolveEquipmentSplashDamage(slot, center, resolvedRadius, baseDamage, resolvedMinimumMultiplier, out float damage, out Vector3 hitPoint) &&
+                TryApplyEquipmentDamage(slotId, damage, attackerClientId, hitPoint, hitPoint - center))
             {
                 hitCount++;
             }
@@ -2822,6 +2930,7 @@ public class GameplayPickupManager : NetworkBehaviour
                 TryApplyPenguinDamage(slotId, damage, attackerClientId, hitPoint, ResolvePenguinHitEffectDirection(hitPoint - center)))
             {
                 hitCount++;
+                penguinHitCount++;
             }
         }
 
@@ -2844,10 +2953,11 @@ public class GameplayPickupManager : NetworkBehaviour
         return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
     }
 
-    private bool TryResolveEquipmentSplashDamage(PickupSlot slot, Vector3 center, float radius, float baseDamage, float minimumMultiplier, out float damage)
+    private bool TryResolveEquipmentSplashDamage(PickupSlot slot, Vector3 center, float radius, float baseDamage, float minimumMultiplier, out float damage, out Vector3 hitPoint)
     {
-        // Calculate one field equipment drop's explosion falloff from its pickup target point.
+        // Calculate one field equipment drop's explosion falloff and visible surface impact point.
         damage = 0f;
+        hitPoint = default;
         if (!IsDamageableEquipmentSlot(slot))
         {
             return false;
@@ -2855,6 +2965,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
         Vector3 targetPoint = slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight);
         float targetRadius = Mathf.Max(0.1f, equipmentHitRadius);
+        hitPoint = ResolveSplashSurfacePoint(center, targetPoint, targetRadius);
         return TryResolveSplashDamage(center, radius, baseDamage, minimumMultiplier, targetPoint, targetRadius, out damage);
     }
 
@@ -3640,8 +3751,12 @@ public class GameplayPickupManager : NetworkBehaviour
         // Remove a destroyed field equipment drop and let the normal equipment respawn flow replace it.
         PickupSlot slot = GetOrCreateSlot(slotId);
         string equipmentId = slot.EquipmentId;
+        Vector3 breakPosition = slot.Position;
         bool shouldRespawn = slot.RespawnEquipmentOnDespawn;
         DeactivatePickup(slotId);
+        PlayFieldEquipmentBreakSfxClientRpc(
+            breakPosition,
+            new FixedString64Bytes(equipmentId ?? string.Empty));
 
         if (shouldRespawn && matchStateController != null && matchStateController.State.Value == NetworkMatchState.MatchMain)
         {
@@ -3951,6 +4066,13 @@ public class GameplayPickupManager : NetworkBehaviour
     }
 
     [ClientRpc]
+    private void PlaySuddenEventWarningClientRpc()
+    {
+        // Play the event-start alarm once for every client present when the event activates.
+        SoundManager.Instance?.PlaySuddenEventWarningSfx();
+    }
+
+    [ClientRpc]
     private void PlaySuddenEventBgmClientRpc(SuddenEventType eventType)
     {
         // Tell every client to play the BGM override associated with the active sudden event.
@@ -4143,16 +4265,47 @@ public class GameplayPickupManager : NetworkBehaviour
     }
 
     [ClientRpc]
+    private void PlayPickupSfxClientRpc(PickupSfxKind kind, ClientRpcParams rpcParams = default)
+    {
+        // Forward server-approved pickup feedback to the collecting client's shared 2D SFX channel.
+        SoundManager.Instance?.PlayPickupSfx(kind);
+    }
+
+    [ClientRpc]
     private void PlayBoxHitEffectClientRpc(Vector3 position, bool destroyed)
     {
         // Spawn stone feedback and play either the damage or destruction sound on every client.
         PlayBoxHitOneShotEffect(ResolveBoxHitEffectPrefab(), position);
-        PlayBoxDamageSound(destroyed);
+        PlayBoxDamageSound(destroyed, position);
     }
 
-    private void PlayBoxDamageSound(bool destroyed)
+    [ClientRpc]
+    private void PlayFieldEquipmentHitEffectClientRpc(Vector3 position, Vector3 hitDirection)
     {
-        // Route synchronized statue damage sounds through the shared client SFX channel.
+        // Spawn the same directional Green hit feedback used by players on every observing client.
+        PlayDirectionalHitOneShotEffect(
+            ResolveEquipmentHitEffectPrefab(),
+            position,
+            hitDirection,
+            equipmentHitEffectEulerOffset,
+            equipmentHitEffectScale,
+            equipmentHitEffectLifetime,
+            "FieldEquipmentGreenHitEffect");
+    }
+
+    [ClientRpc]
+    private void PlayFieldEquipmentBreakSfxClientRpc(Vector3 position, FixedString64Bytes equipmentId)
+    {
+        // Play a positional field-equipment break cue with an optional per-equipment audio override.
+        EquipmentDefinition equipment = EquipmentCatalog.Get(equipmentId.ToString());
+        SoundManager.Instance?.PlayWorldEquipmentBreakSfx(
+            position,
+            equipment != null ? equipment.BreakSfxClip : null);
+    }
+
+    private void PlayBoxDamageSound(bool destroyed, Vector3 position)
+    {
+        // Route synchronized statue damage sounds through the pooled 3D client SFX channel.
         SoundManager soundManager = SoundManager.Instance;
         if (soundManager == null)
         {
@@ -4161,14 +4314,21 @@ public class GameplayPickupManager : NetworkBehaviour
 
         AudioClip clip = destroyed ? boxBreakSfxClip : boxHitSfxClip;
         float volumeScale = destroyed ? boxBreakSfxVolumeScale : boxHitSfxVolumeScale;
-        soundManager.PlaySfx(clip, volumeScale);
+        soundManager.PlayWorldSfx(clip, position, volumeScale);
     }
 
     [ClientRpc]
     private void PlayPenguinHitEffectClientRpc(Vector3 position, Vector3 hitDirection)
     {
         // Spawn the same green directional hit VFX used by players for every damaged Penguin.
-        PlayPenguinHitOneShotEffect(ResolvePenguinHitEffectPrefab(), position, hitDirection);
+        PlayDirectionalHitOneShotEffect(
+            ResolvePenguinHitEffectPrefab(),
+            position,
+            hitDirection,
+            penguinHitEffectEulerOffset,
+            penguinHitEffectScale,
+            penguinHitEffectLifetime,
+            "PenguinGreenHitEffect");
     }
 
     [ClientRpc]
@@ -4249,19 +4409,26 @@ public class GameplayPickupManager : NetworkBehaviour
         Destroy(effectObject, Mathf.Max(0.1f, boxHitEffectLifetime));
     }
 
-    private void PlayPenguinHitOneShotEffect(GameObject effectPrefab, Vector3 position, Vector3 hitDirection)
+    private void PlayDirectionalHitOneShotEffect(
+        GameObject effectPrefab,
+        Vector3 position,
+        Vector3 hitDirection,
+        Vector3 eulerOffset,
+        float scale,
+        float lifetime,
+        string effectName)
     {
-        // Instantiate, orient, play, and clean up one Penguin green-hit effect.
+        // Instantiate, orient, play, and clean up a shared directional impact effect.
         if (effectPrefab == null)
         {
             return;
         }
 
-        Vector3 resolvedDirection = ResolvePenguinHitEffectDirection(hitDirection);
-        Quaternion rotation = Quaternion.LookRotation(resolvedDirection, Vector3.up) * Quaternion.Euler(penguinHitEffectEulerOffset);
+        Vector3 resolvedDirection = ResolveDirectionalHitEffectDirection(hitDirection);
+        Quaternion rotation = Quaternion.LookRotation(resolvedDirection, Vector3.up) * Quaternion.Euler(eulerOffset);
         GameObject effectObject = Instantiate(effectPrefab, position, rotation);
-        effectObject.name = "PenguinGreenHitEffect";
-        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, penguinHitEffectScale);
+        effectObject.name = effectName;
+        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, scale);
         effectObject.SetActive(true);
 
         ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
@@ -4280,7 +4447,7 @@ public class GameplayPickupManager : NetworkBehaviour
             particleSystem.Play(withChildren: false);
         }
 
-        Destroy(effectObject, Mathf.Max(0.1f, penguinHitEffectLifetime));
+        Destroy(effectObject, Mathf.Max(0.1f, lifetime));
     }
 
     private void PlayPenguinDisappearOneShotEffect(GameObject effectPrefab, Vector3 position)
@@ -4444,6 +4611,23 @@ public class GameplayPickupManager : NetworkBehaviour
         return resolvedDefaultBoxHitEffectPrefab;
     }
 
+    private GameObject ResolveEquipmentHitEffectPrefab()
+    {
+        // Use the field-equipment override first, then load the same Green hit resource used by players.
+        if (equipmentHitEffectPrefab != null)
+        {
+            return equipmentHitEffectPrefab;
+        }
+
+        if (!triedLoadDefaultEquipmentHitEffectPrefab)
+        {
+            triedLoadDefaultEquipmentHitEffectPrefab = true;
+            resolvedDefaultEquipmentHitEffectPrefab = Resources.Load<GameObject>(DefaultEquipmentHitEffectResourcePath);
+        }
+
+        return resolvedDefaultEquipmentHitEffectPrefab;
+    }
+
     private GameObject ResolvePenguinHitEffectPrefab()
     {
         // Use an inspector override first, then load the same Green hit resource used by players.
@@ -4500,6 +4684,31 @@ public class GameplayPickupManager : NetworkBehaviour
     private static Vector3 ResolvePenguinHitEffectDirection(Vector3 requestedDirection)
     {
         // Normalize the incoming attack direction and provide a stable orientation when it is unavailable.
+        return ResolveDirectionalHitEffectDirection(requestedDirection);
+    }
+
+    private Vector3 ResolveEquipmentHitEffectPoint(PickupSlot slot, Vector3 requestedPoint)
+    {
+        // Use the approved impact point and fall back to the field equipment's damage target height.
+        if (IsFinite(requestedPoint))
+        {
+            return requestedPoint;
+        }
+
+        return slot != null
+            ? slot.Position + Vector3.up * Mathf.Max(0f, equipmentTargetHeight)
+            : Vector3.zero;
+    }
+
+    private static Vector3 ResolveEquipmentHitEffectDirection(Vector3 requestedDirection)
+    {
+        // Normalize field-equipment impact direction with the same fallback used by player hit effects.
+        return ResolveDirectionalHitEffectDirection(requestedDirection);
+    }
+
+    private static Vector3 ResolveDirectionalHitEffectDirection(Vector3 requestedDirection)
+    {
+        // Normalize directional impact data and provide a stable forward orientation when it is unavailable.
         if (IsFinite(requestedDirection) && requestedDirection.sqrMagnitude > 0.0001f)
         {
             return requestedDirection.normalized;
@@ -4601,6 +4810,15 @@ public class GameplayPickupManager : NetworkBehaviour
             return CreateStatPickupVisual(slot.StatType);
         }
 
+        if (slot.Kind == PickupKind.Functional)
+        {
+            GameObject functionalVisual = CreateFunctionalPickupVisual(slot.FunctionalType);
+            if (functionalVisual != null)
+            {
+                return functionalVisual;
+            }
+        }
+
         if (slot.Kind == PickupKind.Equipment)
         {
             EquipmentDefinition equipment = EquipmentCatalog.Get(slot.EquipmentId);
@@ -4628,6 +4846,129 @@ public class GameplayPickupManager : NetworkBehaviour
         };
 
         return visual;
+    }
+
+    private GameObject CreateFunctionalPickupVisual(FunctionalPickupType functionalType)
+    {
+        // Build a camera-facing world sprite for each configured contact buff or healing item.
+        Sprite sprite = ResolveFunctionalPickupVisualSprite(functionalType);
+        if (sprite == null)
+        {
+            return null;
+        }
+
+        bool isBasicHeal = functionalType == FunctionalPickupType.BasicHeal;
+        float targetHeight = isBasicHeal ? basicHealVisualWorldHeight : buffPotionVisualWorldHeight;
+        Vector3 localOffset = isBasicHeal ? basicHealVisualLocalOffset : buffPotionVisualLocalOffset;
+        string visualName = ResolveFunctionalPickupVisualName(functionalType);
+
+        GameObject visual = new($"{visualName}Root");
+        GameObject spriteObject = new(visualName);
+        spriteObject.transform.SetParent(visual.transform, false);
+        spriteObject.transform.localPosition = localOffset;
+
+        SpriteRenderer spriteRenderer = spriteObject.AddComponent<SpriteRenderer>();
+        spriteRenderer.sprite = sprite;
+        spriteRenderer.color = Color.white;
+        spriteRenderer.sortingOrder = functionalPickupSpriteSortingOrder;
+
+        float spriteHeight = Mathf.Max(0.0001f, sprite.bounds.size.y);
+        float uniformScale = Mathf.Max(0.01f, targetHeight) / spriteHeight;
+        spriteObject.transform.localScale = Vector3.one * uniformScale;
+        visual.AddComponent<PickupSpriteBillboard>();
+        return visual;
+    }
+
+    private Sprite ResolveFunctionalPickupVisualSprite(FunctionalPickupType functionalType)
+    {
+        // Route each supported functional pickup type to its independently replaceable sprite asset.
+        switch (functionalType)
+        {
+            case FunctionalPickupType.BasicHeal:
+                return ResolveConfiguredFunctionalPickupSprite(
+                    basicHealVisualSprite,
+                    basicHealVisualResourcePath,
+                    DefaultBasicHealVisualResourcePath,
+                    "basic heal",
+                    ref resolvedBasicHealVisualSprite,
+                    ref triedLoadBasicHealVisualSprite);
+            case FunctionalPickupType.AttackPowerBuff:
+                return ResolveConfiguredFunctionalPickupSprite(
+                    attackPowerBuffVisualSprite,
+                    attackPowerBuffVisualResourcePath,
+                    DefaultAttackPowerBuffVisualResourcePath,
+                    "attack power buff",
+                    ref resolvedAttackPowerBuffVisualSprite,
+                    ref triedLoadAttackPowerBuffVisualSprite);
+            case FunctionalPickupType.DamageReductionBuff:
+                return ResolveConfiguredFunctionalPickupSprite(
+                    damageReductionBuffVisualSprite,
+                    damageReductionBuffVisualResourcePath,
+                    DefaultDamageReductionBuffVisualResourcePath,
+                    "damage reduction buff",
+                    ref resolvedDamageReductionBuffVisualSprite,
+                    ref triedLoadDamageReductionBuffVisualSprite);
+            case FunctionalPickupType.MoveSpeedBuff:
+                return ResolveConfiguredFunctionalPickupSprite(
+                    moveSpeedBuffVisualSprite,
+                    moveSpeedBuffVisualResourcePath,
+                    DefaultMoveSpeedBuffVisualResourcePath,
+                    "move speed buff",
+                    ref resolvedMoveSpeedBuffVisualSprite,
+                    ref triedLoadMoveSpeedBuffVisualSprite);
+            default:
+                return null;
+        }
+    }
+
+    private static Sprite ResolveConfiguredFunctionalPickupSprite(
+        Sprite inspectorSprite,
+        string configuredResourcePath,
+        string defaultResourcePath,
+        string pickupLabel,
+        ref Sprite cachedSprite,
+        ref bool triedLoad)
+    {
+        // Prefer an Inspector override, then cache the configured Resources sprite with a default-path fallback.
+        if (inspectorSprite != null)
+        {
+            return inspectorSprite;
+        }
+
+        if (triedLoad)
+        {
+            return cachedSprite;
+        }
+
+        triedLoad = true;
+        string resourcePath = string.IsNullOrWhiteSpace(configuredResourcePath)
+            ? defaultResourcePath
+            : configuredResourcePath.Trim();
+        cachedSprite = Resources.Load<Sprite>(resourcePath);
+        if (cachedSprite == null && resourcePath != defaultResourcePath)
+        {
+            cachedSprite = Resources.Load<Sprite>(defaultResourcePath);
+        }
+
+        if (cachedSprite == null)
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Functional pickup sprite not found type={pickupLabel} path={resourcePath}");
+        }
+
+        return cachedSprite;
+    }
+
+    private static string ResolveFunctionalPickupVisualName(FunctionalPickupType functionalType)
+    {
+        // Give generated sprite objects stable subtype names for runtime inspection and future prefab replacement.
+        return functionalType switch
+        {
+            FunctionalPickupType.BasicHeal => "MedicineBottleSprite",
+            FunctionalPickupType.AttackPowerBuff => "AttackPowerPotionSprite",
+            FunctionalPickupType.DamageReductionBuff => "DefencePotionSprite",
+            FunctionalPickupType.MoveSpeedBuff => "MoveSpeedPotionSprite",
+            _ => "FunctionalPickupSprite"
+        };
     }
 
     private GameObject CreateStatPickupVisual(PlayerStatType statType)
@@ -4886,7 +5227,7 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void EnsureBoxVisual(int slotId, BoxSlot slot)
     {
-        // Create the temporary box visual from Bangae_Statue or a cube fallback.
+        // Create the statue visual and configure its local player-blocking collision volume.
         if (slot.Visual != null)
         {
             return;
@@ -4895,6 +5236,7 @@ public class GameplayPickupManager : NetworkBehaviour
         GameObject visual = CreateBoxVisual();
         visual.name = $"BoxItemVisual_{slotId}";
         RemoveVisualColliders(visual);
+        ConfigureBoxBlockingCollider(visual);
         visual.SetActive(false);
         slot.Visual = visual;
     }
@@ -5120,6 +5462,75 @@ public class GameplayPickupManager : NetworkBehaviour
         GameObject visual = prefab != null ? Instantiate(prefab) : GameObject.CreatePrimitive(PrimitiveType.Cube);
         visual.transform.localScale = basicBoxVisualScale;
         return visual;
+    }
+
+    private void ConfigureBoxBlockingCollider(GameObject visual)
+    {
+        // Fit one non-trigger box collider to the rendered statue so CharacterControllers cannot pass through it.
+        if (!boxBlocksPlayers || visual == null)
+        {
+            return;
+        }
+
+        Bounds localBounds = CalculateVisualLocalBounds(visual);
+        GameObject colliderObject = new("PlayerBlockingCollider");
+        colliderObject.layer = visual.layer;
+        colliderObject.transform.SetParent(visual.transform, false);
+
+        BoxCollider boxCollider = colliderObject.AddComponent<BoxCollider>();
+        boxCollider.center = localBounds.center + basicBoxColliderCenterOffset;
+        boxCollider.size = Vector3.Scale(localBounds.size, SanitizeColliderSizeMultiplier(basicBoxColliderSizeMultiplier));
+        boxCollider.isTrigger = false;
+    }
+
+    private static Bounds CalculateVisualLocalBounds(GameObject visual)
+    {
+        // Convert every renderer's world bounds into root-local space for a stable generated collider.
+        Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(includeInactive: true);
+        Bounds localBounds = new(Vector3.zero, Vector3.one);
+        bool hasBounds = false;
+        Transform root = visual.transform;
+
+        for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+        {
+            Renderer renderer = renderers[rendererIndex];
+            if (renderer == null)
+            {
+                continue;
+            }
+
+            Bounds worldBounds = renderer.bounds;
+            Vector3 worldMin = worldBounds.min;
+            Vector3 worldMax = worldBounds.max;
+            for (int cornerIndex = 0; cornerIndex < 8; cornerIndex++)
+            {
+                Vector3 worldCorner = new(
+                    (cornerIndex & 1) == 0 ? worldMin.x : worldMax.x,
+                    (cornerIndex & 2) == 0 ? worldMin.y : worldMax.y,
+                    (cornerIndex & 4) == 0 ? worldMin.z : worldMax.z);
+                Vector3 localCorner = root.InverseTransformPoint(worldCorner);
+                if (!hasBounds)
+                {
+                    localBounds = new Bounds(localCorner, Vector3.zero);
+                    hasBounds = true;
+                }
+                else
+                {
+                    localBounds.Encapsulate(localCorner);
+                }
+            }
+        }
+
+        return localBounds;
+    }
+
+    private static Vector3 SanitizeColliderSizeMultiplier(Vector3 multiplier)
+    {
+        // Prevent zero or negative Inspector values from disabling an intended blocking axis.
+        return new Vector3(
+            Mathf.Max(0.01f, Mathf.Abs(multiplier.x)),
+            Mathf.Max(0.01f, Mathf.Abs(multiplier.y)),
+            Mathf.Max(0.01f, Mathf.Abs(multiplier.z)));
     }
 
     private static void RemoveVisualColliders(GameObject visual)
@@ -5512,5 +5923,58 @@ public class GameplayPickupManager : NetworkBehaviour
             PlayerStatType.FireRate => Color.magenta,
             _ => Color.white
         };
+    }
+}
+
+public sealed class PickupSpriteBillboard : MonoBehaviour
+{
+    [SerializeField] private bool keepUpright = true;
+
+    private Camera targetCamera;
+
+    private void OnEnable()
+    {
+        // Resolve the active gameplay camera and orient the sprite immediately when it appears.
+        ResolveTargetCamera();
+        FaceTargetCamera();
+    }
+
+    private void LateUpdate()
+    {
+        // Follow camera movement after gameplay transforms finish updating for the frame.
+        if (targetCamera == null || !targetCamera.isActiveAndEnabled)
+        {
+            ResolveTargetCamera();
+        }
+
+        FaceTargetCamera();
+    }
+
+    private void ResolveTargetCamera()
+    {
+        // Prefer Unity's MainCamera tag so each client faces its own active gameplay camera.
+        targetCamera = Camera.main;
+    }
+
+    private void FaceTargetCamera()
+    {
+        // Point the sprite plane at the camera while optionally preserving a world-up orientation.
+        if (targetCamera == null)
+        {
+            return;
+        }
+
+        Vector3 direction = targetCamera.transform.position - transform.position;
+        if (keepUpright)
+        {
+            direction.y = 0f;
+        }
+
+        if (direction.sqrMagnitude <= 0.0001f)
+        {
+            return;
+        }
+
+        transform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
     }
 }

@@ -1,7 +1,20 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
+
+public enum PickupSfxKind : byte
+{
+    Stat = 0,
+    Healing = 1,
+    AttackBuff = 2,
+    DefenceBuff = 3,
+    MoveSpeedBuff = 4,
+    AutoFireBuff = 5,
+    Equipment = 6,
+    FinalObjective = 7
+}
 
 public class SoundManager : MonoBehaviour
 {
@@ -10,6 +23,20 @@ public class SoundManager : MonoBehaviour
     {
         public SuddenEventType EventType = SuddenEventType.None;
         public AudioClip Clip;
+    }
+
+    private sealed class WorldSfxVoice
+    {
+        public AudioSource Source;
+        public float VolumeScale = 1f;
+    }
+
+    [System.Serializable]
+    private class PickupSfxBinding
+    {
+        public PickupSfxKind Kind = PickupSfxKind.Stat;
+        public AudioClip Clip;
+        [Range(0f, 1f)] public float VolumeScale = 1f;
     }
 
     public static SoundManager Instance { get; private set; }
@@ -44,6 +71,38 @@ public class SoundManager : MonoBehaviour
     [SerializeField] private float bgmVolume = 0.7f;
     [Range(0f, 1f)]
     [SerializeField] private float sfxVolume = 1f;
+
+    [Header("Gameplay Feedback SFX")]
+    [SerializeField] private AudioClip suddenEventWarningSfxClip;
+    [SerializeField] private AudioClip localPlayerHitSfxClip;
+    [SerializeField] private AudioClip successfulPlayerHitSfxClip;
+    [SerializeField] private AudioClip defaultEquipmentBreakSfxClip;
+    [Range(0f, 1f)]
+    [SerializeField] private float suddenEventWarningSfxVolumeScale = 1f;
+    [Range(0f, 1f)]
+    [SerializeField] private float localPlayerHitSfxVolumeScale = 1f;
+    [Range(0f, 1f)]
+    [SerializeField] private float successfulPlayerHitSfxVolumeScale = 1f;
+    [Range(0f, 1f)]
+    [SerializeField] private float equipmentBreakSfxVolumeScale = 1f;
+
+    [Header("Pickup SFX")]
+    [SerializeField] private AudioClip defaultPickupSfxClip;
+    [SerializeField] private PickupSfxBinding[] pickupSfxBindings;
+
+    [Header("World SFX")]
+    [Min(1)]
+    [SerializeField] private int initialWorldSfxPoolSize = 8;
+    [Min(1)]
+    [SerializeField] private int maxWorldSfxPoolSize = 24;
+    [Min(0f)]
+    [SerializeField] private float worldSfxMinDistance = 3f;
+    [Min(0.01f)]
+    [SerializeField] private float worldSfxMaxDistance = 30f;
+    [SerializeField] private AudioRolloffMode worldSfxRolloffMode = AudioRolloffMode.Logarithmic;
+    [Range(0f, 5f)]
+    [SerializeField] private float worldSfxDopplerLevel;
+
     [SerializeField] private bool persistAcrossScenes = true;
 
     [Header("Server Mode")]
@@ -57,6 +116,9 @@ public class SoundManager : MonoBehaviour
     private SuddenEventType activeSuddenEventBgm = SuddenEventType.None;
     private Coroutine bgmFadeRoutine;
     private Coroutine suddenEventFadeRoutine;
+    private readonly List<WorldSfxVoice> worldSfxVoices = new List<WorldSfxVoice>();
+    private Transform worldSfxPoolRoot;
+    private int nextWorldSfxVoiceIndex;
 
     public float MasterVolume => masterVolume;
     public float BgmVolume => bgmVolume;
@@ -84,6 +146,7 @@ public class SoundManager : MonoBehaviour
             return;
         }
 
+        EnsureWorldSfxPool();
         ApplyConfiguredMasterVolume(GameConfigStore.MasterVolume);
     }
 
@@ -332,6 +395,103 @@ public class SoundManager : MonoBehaviour
         sfxSource.PlayOneShot(clip, Mathf.Clamp01(volumeScale));
     }
 
+    public void PlaySuddenEventWarningSfx()
+    {
+        // Play the global 2D warning cue once when a sudden event begins locally.
+        PlaySfx(suddenEventWarningSfxClip, suddenEventWarningSfxVolumeScale);
+    }
+
+    public void PlayLocalPlayerHitSfx()
+    {
+        // Play non-spatial damage feedback only for the client whose player was hit.
+        PlaySfx(localPlayerHitSfxClip, localPlayerHitSfxVolumeScale);
+    }
+
+    public void PlaySuccessfulPlayerHitSfx()
+    {
+        // Play non-spatial confirmation for the client whose attack damaged a player or event enemy.
+        PlaySfx(successfulPlayerHitSfxClip, successfulPlayerHitSfxVolumeScale);
+    }
+
+    public void PlayLocalEquipmentBreakSfx(AudioClip overrideClip = null)
+    {
+        // Play reliable non-spatial destruction feedback for the equipment owner using an optional equipment-specific clip.
+        PlaySfx(ResolveEquipmentBreakSfx(overrideClip), equipmentBreakSfxVolumeScale);
+    }
+
+    public void PlayWorldEquipmentBreakSfx(Vector3 position, AudioClip overrideClip = null)
+    {
+        // Play equipment destruction at its world position while allowing each equipment definition to override the default clip.
+        PlayWorldSfx(ResolveEquipmentBreakSfx(overrideClip), position, equipmentBreakSfxVolumeScale);
+    }
+
+    public void PlayPickupSfx(PickupSfxKind kind)
+    {
+        // Play collector-only 2D feedback using the independently replaceable binding for this pickup category.
+        AudioClip clip = defaultPickupSfxClip;
+        float volumeScale = 1f;
+        if (pickupSfxBindings != null)
+        {
+            for (int i = 0; i < pickupSfxBindings.Length; i++)
+            {
+                PickupSfxBinding binding = pickupSfxBindings[i];
+                if (binding == null || binding.Kind != kind)
+                {
+                    continue;
+                }
+
+                clip = binding.Clip != null ? binding.Clip : defaultPickupSfxClip;
+                volumeScale = Mathf.Clamp01(binding.VolumeScale);
+                break;
+            }
+        }
+
+        PlaySfx(clip, volumeScale);
+    }
+
+    public void PlayWorldSfx(AudioClip clip, Vector3 position)
+    {
+        // Play a spatial one-shot at the supplied world position using normal SFX volume.
+        PlayWorldSfx(clip, position, 1f);
+    }
+
+    public void PlayWorldSfx(AudioClip clip, Vector3 position, float volumeScale)
+    {
+        // Reuse one pooled 3D source so distance attenuation and directional panning come from the listener position.
+        if (ShouldMuteAudioForServer())
+        {
+            ApplyServerAudioMute();
+            return;
+        }
+
+        if (clip == null)
+        {
+            return;
+        }
+
+        EnsureWorldSfxPool();
+        WorldSfxVoice voice = AcquireWorldSfxVoice();
+        if (voice == null || voice.Source == null)
+        {
+            return;
+        }
+
+        voice.VolumeScale = Mathf.Clamp01(volumeScale);
+        AudioSource source = voice.Source;
+        source.Stop();
+        source.transform.position = position;
+        source.clip = clip;
+        source.volume = Mathf.Clamp01(sfxVolume) * voice.VolumeScale;
+        source.mute = false;
+        source.Play();
+    }
+
+    private AudioClip ResolveEquipmentBreakSfx(AudioClip overrideClip)
+    {
+        // Prefer equipment-specific audio and fall back to the shared destruction cue configured on this manager.
+        return overrideClip != null ? overrideClip : defaultEquipmentBreakSfxClip;
+    }
+
     private void ApplyConfiguredMasterVolume(float value)
     {
         // Apply the saved master volume globally and refresh channel-specific source volumes.
@@ -371,6 +531,126 @@ public class SoundManager : MonoBehaviour
         ConfigureAudioSource(suddenEventBgmSource, true);
     }
 
+    private void EnsureWorldSfxPool()
+    {
+        // Create a persistent child pool and prewarm enough 3D sources for common overlapping gameplay sounds.
+        if (worldSfxPoolRoot == null)
+        {
+            Transform existingRoot = transform.Find("World SFX Pool");
+            if (existingRoot != null)
+            {
+                worldSfxPoolRoot = existingRoot;
+                AudioSource[] existingSources = existingRoot.GetComponentsInChildren<AudioSource>(true);
+                for (int i = 0; i < existingSources.Length; i++)
+                {
+                    AddExistingWorldSfxVoice(existingSources[i]);
+                }
+            }
+            else
+            {
+                GameObject poolObject = new GameObject("World SFX Pool");
+                worldSfxPoolRoot = poolObject.transform;
+                worldSfxPoolRoot.SetParent(transform, false);
+            }
+        }
+
+        int resolvedMaximum = Mathf.Max(1, maxWorldSfxPoolSize);
+        int resolvedInitialSize = Mathf.Clamp(initialWorldSfxPoolSize, 1, resolvedMaximum);
+        while (worldSfxVoices.Count < resolvedInitialSize)
+        {
+            CreateWorldSfxVoice();
+        }
+    }
+
+    private void AddExistingWorldSfxVoice(AudioSource source)
+    {
+        // Restore a runtime-created pooled source if the pool root already exists after an editor reload.
+        if (source == null)
+        {
+            return;
+        }
+
+        ConfigureWorldSfxSource(source);
+        worldSfxVoices.Add(new WorldSfxVoice
+        {
+            Source = source
+        });
+    }
+
+    private WorldSfxVoice CreateWorldSfxVoice()
+    {
+        // Add one independently positioned 3D source to the world SFX pool.
+        if (worldSfxPoolRoot == null)
+        {
+            return null;
+        }
+
+        GameObject voiceObject = new GameObject($"World SFX Voice {worldSfxVoices.Count + 1:00}");
+        voiceObject.transform.SetParent(worldSfxPoolRoot, false);
+        AudioSource source = voiceObject.AddComponent<AudioSource>();
+        ConfigureWorldSfxSource(source);
+
+        WorldSfxVoice voice = new WorldSfxVoice
+        {
+            Source = source
+        };
+        worldSfxVoices.Add(voice);
+        return voice;
+    }
+
+    private void ConfigureWorldSfxSource(AudioSource source)
+    {
+        // Configure a pooled source for stationary one-shot effects with Unity's built-in 3D attenuation.
+        if (source == null)
+        {
+            return;
+        }
+
+        float resolvedMinDistance = Mathf.Max(0f, worldSfxMinDistance);
+        source.playOnAwake = false;
+        source.loop = false;
+        source.spatialBlend = 1f;
+        source.rolloffMode = worldSfxRolloffMode;
+        source.minDistance = resolvedMinDistance;
+        source.maxDistance = Mathf.Max(resolvedMinDistance + 0.01f, worldSfxMaxDistance);
+        source.dopplerLevel = Mathf.Max(0f, worldSfxDopplerLevel);
+        source.spread = 0f;
+        source.mute = serverAudioMuted;
+    }
+
+    private WorldSfxVoice AcquireWorldSfxVoice()
+    {
+        // Prefer an idle source, grow up to the cap, then recycle voices in round-robin order under heavy overlap.
+        int voiceCount = worldSfxVoices.Count;
+        for (int offset = 0; offset < voiceCount; offset++)
+        {
+            int index = (nextWorldSfxVoiceIndex + offset) % voiceCount;
+            WorldSfxVoice candidate = worldSfxVoices[index];
+            if (candidate.Source != null && !candidate.Source.isPlaying)
+            {
+                nextWorldSfxVoiceIndex = (index + 1) % voiceCount;
+                return candidate;
+            }
+        }
+
+        int resolvedMaximum = Mathf.Max(1, maxWorldSfxPoolSize);
+        if (voiceCount < resolvedMaximum)
+        {
+            WorldSfxVoice createdVoice = CreateWorldSfxVoice();
+            nextWorldSfxVoiceIndex = 0;
+            return createdVoice;
+        }
+
+        if (voiceCount == 0)
+        {
+            return null;
+        }
+
+        int recycledIndex = nextWorldSfxVoiceIndex % voiceCount;
+        nextWorldSfxVoiceIndex = (recycledIndex + 1) % voiceCount;
+        return worldSfxVoices[recycledIndex];
+    }
+
     private void ConfigureAudioSource(AudioSource source, bool loop)
     {
         // Keep manager-owned sources as 2D sounds so BGM and UI sounds are not spatialized.
@@ -406,6 +686,15 @@ public class SoundManager : MonoBehaviour
                 suddenEventBgmSource.volume = 0f;
             }
 
+            for (int i = 0; i < worldSfxVoices.Count; i++)
+            {
+                AudioSource source = worldSfxVoices[i].Source;
+                if (source != null)
+                {
+                    source.volume = 0f;
+                }
+            }
+
             return;
         }
 
@@ -422,6 +711,15 @@ public class SoundManager : MonoBehaviour
         if (suddenEventBgmSource != null)
         {
             suddenEventBgmSource.volume = suddenEventBgmActive ? Mathf.Clamp01(suddenEventBgmVolume) : 0f;
+        }
+
+        for (int i = 0; i < worldSfxVoices.Count; i++)
+        {
+            WorldSfxVoice voice = worldSfxVoices[i];
+            if (voice.Source != null)
+            {
+                voice.Source.volume = Mathf.Clamp01(sfxVolume) * Mathf.Clamp01(voice.VolumeScale);
+            }
         }
     }
 
@@ -651,8 +949,22 @@ public class SoundManager : MonoBehaviour
         AudioListener.volume = 0f;
         StopBgm();
         StopSuddenEventBgm();
+        StopWorldSfx();
         SetAudioSourcesMuted(true);
         RefreshSourceVolumes();
+    }
+
+    private void StopWorldSfx()
+    {
+        // Stop every pooled positional sound when the process transitions into server-only audio policy.
+        for (int i = 0; i < worldSfxVoices.Count; i++)
+        {
+            AudioSource source = worldSfxVoices[i].Source;
+            if (source != null)
+            {
+                source.Stop();
+            }
+        }
     }
 
     private void SetAudioSourcesMuted(bool muted)
@@ -671,6 +983,15 @@ public class SoundManager : MonoBehaviour
         if (suddenEventBgmSource != null)
         {
             suddenEventBgmSource.mute = muted;
+        }
+
+        for (int i = 0; i < worldSfxVoices.Count; i++)
+        {
+            AudioSource source = worldSfxVoices[i].Source;
+            if (source != null)
+            {
+                source.mute = muted;
+            }
         }
     }
 }

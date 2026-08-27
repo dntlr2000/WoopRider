@@ -1164,6 +1164,11 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         if (targetCombatState.ApplyDamage(damage, OwnerClientId, playerHitPoint, hitDirection))
         {
             impactPoint = playerHitPoint;
+            if (targetCombatState.OwnerClientId != OwnerClientId)
+            {
+                PlayOwnerPlayerHitConfirmation();
+            }
+
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit attacker={OwnerClientId} target={targetCombatState.OwnerClientId} point={playerHitPoint}");
             return true;
         }
@@ -1301,7 +1306,9 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
         float radius = ResolveExplosionRadius(attackSettings);
         float damage = ResolveOutgoingAttackDamage(attackSettings);
         int playerHitCount = 0;
+        int opposingPlayerHitCount = 0;
         int pickupHitCount = 0;
+        int penguinHitCount = 0;
 
         if (damage > 0f)
         {
@@ -1311,7 +1318,8 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                 damage,
                 OwnerClientId,
                 ResolveSplashMinimumDamageMultiplier(attackSettings),
-                ResolveSelfSplashDamageMultiplier(attackSettings));
+                ResolveSelfSplashDamageMultiplier(attackSettings),
+                out opposingPlayerHitCount);
 
             GameplayPickupManager pickupManager = GameplayPickupManager.Instance;
             if (pickupManager != null)
@@ -1321,7 +1329,13 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
                     radius,
                     damage,
                     OwnerClientId,
-                    ResolveSplashMinimumDamageMultiplier(attackSettings));
+                    ResolveSplashMinimumDamageMultiplier(attackSettings),
+                    out penguinHitCount);
+            }
+
+            if (opposingPlayerHitCount > 0 || penguinHitCount > 0)
+            {
+                PlayOwnerPlayerHitConfirmation();
             }
         }
 
@@ -1330,7 +1344,33 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             radius,
             ResolveExplosionEffectScale(attackSettings),
             new FixedString512Bytes(ResolveExplosionEffectResourcePath(attackSettings)));
-        Debug.Log($"[NetworkPlayerAvatarRelay] Cannon exploded attacker={OwnerClientId} point={impactPoint} radius={radius:0.00} playerHits={playerHitCount} pickupHits={pickupHitCount}");
+        Debug.Log($"[NetworkPlayerAvatarRelay] Cannon exploded attacker={OwnerClientId} point={impactPoint} radius={radius:0.00} playerHits={playerHitCount} pickupHits={pickupHitCount} penguinHits={penguinHitCount}");
+    }
+
+    private void PlayOwnerPlayerHitConfirmation()
+    {
+        // Send one successful player-or-event-enemy hit cue only to this attacker's owning client.
+        if (!IsServer || NetworkManager.Singleton == null ||
+            !NetworkManager.Singleton.ConnectedClients.ContainsKey(OwnerClientId))
+        {
+            return;
+        }
+
+        ClientRpcParams rpcParams = new()
+        {
+            Send = new ClientRpcSendParams
+            {
+                TargetClientIds = new[] { OwnerClientId }
+            }
+        };
+        PlayOwnerPlayerHitConfirmationClientRpc(rpcParams);
+    }
+
+    [ClientRpc]
+    private void PlayOwnerPlayerHitConfirmationClientRpc(ClientRpcParams rpcParams = default)
+    {
+        // Play local successful-hit confirmation without exposing the attacker's feedback to other clients.
+        SoundManager.Instance?.PlaySuccessfulPlayerHitSfx();
     }
 
     private static float ResolveExplosionRadius(EquipmentAttackSettings attackSettings)
@@ -1376,7 +1416,12 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return true;
         }
 
-        if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(equipmentSlotId, damage, OwnerClientId))
+        if (pickupKind == 2 && pickupManager.TryApplyEquipmentDamage(
+                equipmentSlotId,
+                damage,
+                OwnerClientId,
+                equipmentHitPoint,
+                hitDirection))
         {
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit equipment attacker={OwnerClientId} slot={equipmentSlotId} point={equipmentHitPoint}");
             return true;
@@ -1384,6 +1429,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
         if (pickupKind == 3 && pickupManager.TryApplyPenguinDamage(penguinSlotId, damage, OwnerClientId, penguinHitPoint, hitDirection))
         {
+            PlayOwnerPlayerHitConfirmation();
             Debug.Log($"[NetworkPlayerAvatarRelay] {attackLabel} hit Penguin attacker={OwnerClientId} slot={penguinSlotId} point={penguinHitPoint}");
             return true;
         }

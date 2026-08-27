@@ -3795,6 +3795,75 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 975715123}
   m_CullTransparentMesh: 1
+--- !u!1001 &991213192
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 465748365064162290, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_Name
+      value: JumpPlatform
+      objectReference: {fileID: 0}
+    - target: {fileID: 668672932563484162, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_Size.y
+      value: 0.25
+      objectReference: {fileID: 0}
+    - target: {fileID: 668672932563484162, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_IsTrigger
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 5580232890622363158, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: launchStrength
+      value: 30
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: -22.03
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: -0.5
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: -6.7455864
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
 --- !u!1 &1006712683
 GameObject:
   m_ObjectHideFlags: 0
@@ -5093,12 +5162,56 @@ MonoBehaviour:
   moveSpeedBuffMultiplier: 2
   autoFireBuffDuration: 10
   functionalPickupPool: 0102030405
+  basicHealVisualSprite: {fileID: 21300000, guid: f09c3fc86b9c1674585536e6a1f35dff, type: 3}
+  basicHealVisualResourcePath: ImageSource/Items/icon_medicine_bottle
+  basicHealVisualWorldHeight: 1.1
+  basicHealVisualLocalOffset: {x: 0, y: 0.05, z: 0}
+  attackPowerBuffVisualSprite: {fileID: 21300000, guid: 3e25d539048d40b488fad704a7a2c34f, type: 3}
+  attackPowerBuffVisualResourcePath: ImageSource/Items/potion_atk
+  damageReductionBuffVisualSprite: {fileID: 21300000, guid: a1e8e6c06d1e1d040ba2d5ab52c3de7b, type: 3}
+  damageReductionBuffVisualResourcePath: ImageSource/Items/potion_def
+  moveSpeedBuffVisualSprite: {fileID: 21300000, guid: 9324fc94c89bb704482faaf8fe2b4564, type: 3}
+  moveSpeedBuffVisualResourcePath: ImageSource/Items/potion_spd
+  buffPotionVisualWorldHeight: 1.1
+  buffPotionVisualLocalOffset: {x: 0, y: 0.05, z: 0}
+  functionalPickupSpriteSortingOrder: 0
   suddenEventsEnabled: 1
   suddenEventStartDelay: 10
   suddenEventDuration: 20
   loadSuddenEventDefinitionsFromResources: 1
   suddenEventDefinitions: []
   fallbackSuddenEventTypes: 0102
+  penguinVisualResourcePath: Prefabs/Enemys/Penguin_enemy
+  penguinSlotIdBase: 7000
+  fallbackPenguinSpawnCount: 5
+  fallbackPenguinStatueHealthMultiplier: 1.5
+  fallbackPenguinStatLootCount: 8
+  fallbackPenguinMoveSpeedRange: {x: 1.2, y: 2.2}
+  fallbackPenguinDecisionDurationRange: {x: 1.2, y: 3.5}
+  fallbackPenguinIdleChance: 0.35
+  penguinHitRadius: 0.7
+  penguinTargetHeight: 0.7
+  penguinBoundsPadding: 1
+  penguinGroundMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  penguinGroundRaycastHeight: 3
+  penguinGroundRaycastDistance: 6
+  penguinGroundOffset: 0
+  penguinTurnSpeed: 360
+  penguinNetworkSyncInterval: 0.1
+  penguinVisualPositionSharpness: 14
+  penguinVisualScale: {x: 0.25, y: 0.25, z: 0.25}
+  penguinDeathDuration: 2
+  penguinHitEffectPrefab: {fileID: 0}
+  penguinHitEffectEulerOffset: {x: 0, y: 0, z: 0}
+  penguinHitEffectScale: 1
+  penguinHitEffectLifetime: 2
+  penguinDisappearEffectPrefab: {fileID: 0}
+  penguinDisappearEffectOffset: {x: 0, y: 0.7, z: 0}
+  penguinDisappearEffectEulerOffset: {x: 0, y: 0, z: 0}
+  penguinDisappearEffectScale: 1
+  penguinDisappearEffectLifetime: 3
   statPickupVisualResourcePath: fbx/Stat_Item/Stat_Item
   statPickupTextureResourceRoot: fbx/Stat_Item
   statPickupTextureMaterialName: Image
@@ -5124,6 +5237,9 @@ MonoBehaviour:
   boxLootScatterRadius: 1.4
   basicBoxVisualResourcePath: fbx/Bangae_Statue
   basicBoxVisualScale: {x: 2, y: 2, z: 2}
+  boxBlocksPlayers: 1
+  basicBoxColliderSizeMultiplier: {x: 1, y: 1, z: 1}
+  basicBoxColliderCenterOffset: {x: 0, y: 0, z: 0}
   basicBoxCleanTextureResourcePath: fbx/BgStatue_Clean
   basicBoxHalfBreakTextureResourcePath: fbx/BgStatue_Half-break
   basicBoxFullBreakTextureResourcePath: fbx/BgStatue_Full-break
@@ -5184,7 +5300,10 @@ MonoBehaviour:
   bombBoxExplosionEffectEulerOffset: {x: 0, y: 0, z: 0}
   bombBoxExplosionEffectScale: 1
   bombBoxExplosionEffectLifetime: 3
-  finalObjectiveSlotIndex: 1000
+  finalMatchRuleDefinition: {fileID: 0}
+  selectedFinalMatchRuleId: break_statues
+  loadFinalMatchRuleDefinitionsFromResources: 1
+  finalMatchRuleResourcesPath: FinalMatchRules
   xRange: {x: -18, y: 18}
   zRange: {x: -18, y: 18}
   spawnY: 0.75
@@ -5196,6 +5315,10 @@ MonoBehaviour:
   equipmentDropBaseHealth: 100
   equipmentHitRadius: 0.85
   equipmentTargetHeight: 0.35
+  equipmentHitEffectPrefab: {fileID: 6823302871133167919, guid: 3138a83bedbd6ad4481ba0b061da2eb6, type: 3}
+  equipmentHitEffectEulerOffset: {x: 0, y: 0, z: 0}
+  equipmentHitEffectScale: 1
+  equipmentHitEffectLifetime: 2
   equipmentLowHealthSparkPrefab: {fileID: 0}
   equipmentLowHealthSparkThreshold: 0.2
   equipmentLowHealthSparkLocalOffset: {x: 0, y: 0.35, z: 0}
@@ -7677,42 +7800,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2119680353}
   m_CullTransparentMesh: 1
---- !u!1 &2146728247
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 2146728248}
-  m_Layer: 5
-  m_Name: Fill Area
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!224 &2146728248
-RectTransform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2146728247}
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children:
-  - {fileID: 292430752}
-  m_Father: {fileID: 7503564}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 0, y: 0.25}
-  m_AnchorMax: {x: 1, y: 0.75}
-  m_AnchoredPosition: {x: -5, y: 0}
-  m_SizeDelta: {x: -20, y: 0}
-  m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1 &2145000001
 GameObject:
   m_ObjectHideFlags: 0
@@ -7782,8 +7869,84 @@ MonoBehaviour:
   suddenEventFadeInDuration: 0.3
   bgmVolume: 0.7
   sfxVolume: 1
+  suddenEventWarningSfxClip: {fileID: 8300000, guid: 9c505bd3590e16b47b3cbc5a2d59dedc, type: 3}
+  localPlayerHitSfxClip: {fileID: 8300000, guid: 6d20270d82b63304ab7f3b5d86329059, type: 3}
+  successfulPlayerHitSfxClip: {fileID: 8300000, guid: c6833e0a55460cb4caba2ac615cc5b72, type: 3}
+  defaultEquipmentBreakSfxClip: {fileID: 8300000, guid: 58862a26fb4867341b31103b1046a832, type: 3}
+  suddenEventWarningSfxVolumeScale: 1
+  localPlayerHitSfxVolumeScale: 1
+  successfulPlayerHitSfxVolumeScale: 1
+  equipmentBreakSfxVolumeScale: 1
+  defaultPickupSfxClip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+  pickupSfxBindings:
+  - Kind: 0
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 1
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 2
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 3
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 4
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 5
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 6
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  - Kind: 7
+    Clip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+    VolumeScale: 1
+  initialWorldSfxPoolSize: 8
+  maxWorldSfxPoolSize: 24
+  worldSfxMinDistance: 3
+  worldSfxMaxDistance: 30
+  worldSfxRolloffMode: 0
+  worldSfxDopplerLevel: 0
   persistAcrossScenes: 1
   muteInServerMode: 1
+--- !u!1 &2146728247
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2146728248}
+  m_Layer: 5
+  m_Name: Fill Area
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!224 &2146728248
+RectTransform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2146728247}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 292430752}
+  m_Father: {fileID: 7503564}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_AnchorMin: {x: 0, y: 0.25}
+  m_AnchorMax: {x: 1, y: 0.75}
+  m_AnchoredPosition: {x: -5, y: 0}
+  m_SizeDelta: {x: -20, y: 0}
+  m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -7800,3 +7963,4 @@ SceneRoots:
   - {fileID: 1853804983}
   - {fileID: 874440843}
   - {fileID: 2145000002}
+  - {fileID: 991213192}

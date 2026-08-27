@@ -228,10 +228,15 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
         float resolvedDamage = ResolveDamageAfterDefense(amount, out float defense);
         currentHealth.Value = Mathf.Max(0f, currentHealth.Value - resolvedDamage);
+        bool equipmentDestroyed = currentHealth.Value <= 0f;
+        string damagedEquipmentId = equipmentState != null && equipmentState.CurrentEquipment != null
+            ? equipmentState.CurrentEquipment.EquipmentId
+            : string.Empty;
         Debug.Log($"[NetworkPlayerCombatState] Damage target={OwnerClientId} attacker={attackerClientId} raw={amount:0.0} defense={defense:0.0} amount={resolvedDamage:0.0} health={currentHealth.Value:0.0}");
         PlayDamageHitEffectClientRpc(ResolveEffectPoint(hitPoint), ResolveEffectDirection(hitDirection));
+        PlayOwnerDamageFeedback(equipmentDestroyed, damagedEquipmentId);
 
-        if (currentHealth.Value <= 0f)
+        if (equipmentDestroyed)
         {
             BreakEquipmentAndDisableActions(attackerClientId, hitPoint, hitDirection);
         }
@@ -454,6 +459,27 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     public static int ApplySplashDamage(Vector3 center, float radius, float baseDamage, ulong attackerClientId, float minimumMultiplier, float selfMultiplier)
     {
         // Apply distance-falloff splash damage to every equipped player inside the explosion radius.
+        return ApplySplashDamage(
+            center,
+            radius,
+            baseDamage,
+            attackerClientId,
+            minimumMultiplier,
+            selfMultiplier,
+            out _);
+    }
+
+    public static int ApplySplashDamage(
+        Vector3 center,
+        float radius,
+        float baseDamage,
+        ulong attackerClientId,
+        float minimumMultiplier,
+        float selfMultiplier,
+        out int opposingPlayerHitCount)
+    {
+        // Apply splash damage and separately report opposing-player hits for attacker feedback.
+        opposingPlayerHitCount = 0;
         if (baseDamage <= 0f || radius <= 0f)
         {
             return 0;
@@ -489,6 +515,10 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             if (state.ApplyDamage(baseDamage * damageMultiplier, attackerClientId, hitPoint, hitDirection))
             {
                 hitCount++;
+                if (state.OwnerClientId != attackerClientId)
+                {
+                    opposingPlayerHitCount++;
+                }
             }
         }
 
@@ -940,9 +970,15 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     private void BreakEquipmentAndDisableActions(ulong attackerClientId, Vector3 breakPoint, Vector3 hitDirection)
     {
         // On health depletion, play the break explosion, remove equipment, and lock actions briefly.
+        string brokenEquipmentId = equipmentState != null && equipmentState.CurrentEquipment != null
+            ? equipmentState.CurrentEquipment.EquipmentId
+            : string.Empty;
         Debug.Log($"[NetworkPlayerCombatState] Equipment broken target={OwnerClientId} attacker={attackerClientId}");
         SendEquipmentBreakNotices(attackerClientId);
-        PlayEquipmentBreakExplosionClientRpc(ResolveEffectPoint(breakPoint), ResolveEffectDirection(hitDirection));
+        PlayEquipmentBreakExplosionClientRpc(
+            ResolveEffectPoint(breakPoint),
+            ResolveEffectDirection(hitDirection),
+            new Unity.Collections.FixedString64Bytes(brokenEquipmentId));
         currentHealth.Value = 0f;
         ClearFunctionalBuffs();
         isInvincible.Value = true;
@@ -1051,6 +1087,51 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         }
     }
 
+    private void PlayOwnerDamageFeedback(bool equipmentDestroyed, string equipmentId)
+    {
+        // Target damage audio at the victim only and prefer the break cue on a lethal equipment hit.
+        if (!IsServer || NetworkManager.Singleton == null ||
+            !NetworkManager.Singleton.ConnectedClients.ContainsKey(OwnerClientId))
+        {
+            return;
+        }
+
+        ClientRpcParams rpcParams = new()
+        {
+            Send = new ClientRpcSendParams
+            {
+                TargetClientIds = new[] { OwnerClientId }
+            }
+        };
+        PlayOwnerDamageFeedbackClientRpc(
+            equipmentDestroyed,
+            new Unity.Collections.FixedString64Bytes(equipmentId ?? string.Empty),
+            rpcParams);
+    }
+
+    [ClientRpc]
+    private void PlayOwnerDamageFeedbackClientRpc(
+        bool equipmentDestroyed,
+        Unity.Collections.FixedString64Bytes equipmentId,
+        ClientRpcParams rpcParams = default)
+    {
+        // Play one local feedback cue without exposing the victim sound to other clients.
+        SoundManager soundManager = SoundManager.Instance;
+        if (soundManager == null)
+        {
+            return;
+        }
+
+        if (equipmentDestroyed)
+        {
+            EquipmentDefinition equipment = EquipmentCatalog.Get(equipmentId.ToString());
+            soundManager.PlayLocalEquipmentBreakSfx(equipment != null ? equipment.BreakSfxClip : null);
+            return;
+        }
+
+        soundManager.PlayLocalPlayerHitSfx();
+    }
+
     [ClientRpc]
     private void PlayDamageHitEffectClientRpc(Vector3 hitPoint, Vector3 hitDirection)
     {
@@ -1066,9 +1147,12 @@ public class NetworkPlayerCombatState : NetworkBehaviour
     }
 
     [ClientRpc]
-    private void PlayEquipmentBreakExplosionClientRpc(Vector3 breakPoint, Vector3 hitDirection)
+    private void PlayEquipmentBreakExplosionClientRpc(
+        Vector3 breakPoint,
+        Vector3 hitDirection,
+        Unity.Collections.FixedString64Bytes equipmentId)
     {
-        // Spawn the equipment-break explosion VFX on every client before the visual state changes.
+        // Spawn break VFX for everyone and play positional audio for clients other than the owner.
         PlayOneShotEffect(
             ResolveBreakExplosionEffectPrefab(),
             ResolveEffectPoint(breakPoint),
@@ -1077,6 +1161,18 @@ public class NetworkPlayerCombatState : NetworkBehaviour
             breakExplosionScale,
             breakExplosionLifetime,
             "EquipmentBreakExplosionEffect");
+
+        if (NetworkManager.Singleton != null &&
+            NetworkManager.Singleton.IsClient &&
+            NetworkManager.Singleton.LocalClientId == OwnerClientId)
+        {
+            return;
+        }
+
+        EquipmentDefinition equipment = EquipmentCatalog.Get(equipmentId.ToString());
+        SoundManager.Instance?.PlayWorldEquipmentBreakSfx(
+            breakPoint,
+            equipment != null ? equipment.BreakSfxClip : null);
     }
 
     private void PlayOneShotEffect(GameObject effectPrefab, Vector3 position, Vector3 direction, Vector3 eulerOffset, float scale, float lifetime, string effectName)

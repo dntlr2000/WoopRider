@@ -83,12 +83,16 @@ public class EquipmentDefinition : ScriptableObject
     [Header("Visual")]
     [SerializeField] private GameObject visualPrefab;
 
+    [Header("Audio")]
+    [SerializeField] private AudioClip breakSfxClip;
+
     public string EquipmentId => equipmentId;
     public string DisplayName => displayName;
     public bool CanAttack => canAttack;
     public bool CanCollectItems => canCollectItems;
     public EquipmentAttackSettings Attack => attack;
     public GameObject VisualPrefab => visualPrefab;
+    public AudioClip BreakSfxClip => breakSfxClip;
 
     public float ModifyStat(PlayerStatType statType, float baseValue)
     {
