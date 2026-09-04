@@ -17,16 +17,25 @@ public class FinalMatchRuleDefinition : ScriptableObject
     [Tooltip("0 uses MatchStateController's default final match duration.")]
     [SerializeField] private float durationOverride = 0f;
 
+    [Header("Stage")]
+    [SerializeField] private GameObject stagePrefab;
+    [SerializeField] private Vector3 stageWorldPosition;
+    [SerializeField] private Vector3 stageWorldEulerAngles;
+    [Min(0f)]
+    [SerializeField] private float fallbackPlayerSpawnMinimumSpacing = 4f;
+
     [Header("First Objective Pickup")]
     [SerializeField] private int objectiveSlotIndex = 1000;
 
     [Header("Break Statues")]
-    [SerializeField] private int statueBoxCount = 6;
+    [SerializeField] private int statueBoxCount = 12;
     [SerializeField] private int statueBoxSlotIdBase = 9000;
     [SerializeField] private float statueRespawnDelay = 2f;
     [SerializeField] private float statueMaxHealth = 100f;
     [SerializeField] private string statueBoxId = "basic_stat_box";
     [SerializeField] private Color statueTintColor = Color.white;
+    [Min(0f)]
+    [SerializeField] private float statueMinimumSpacing = 5f;
 
     public string RuleId => ruleId;
     public FinalMatchRuleType RuleType => ruleType;
@@ -34,6 +43,10 @@ public class FinalMatchRuleDefinition : ScriptableObject
     public string NoticeTitle => noticeTitle;
     public bool EnabledInPool => enabledInPool;
     public float SelectionWeight => selectionWeight;
+    public GameObject StagePrefab => stagePrefab;
+    public Vector3 StageWorldPosition => stageWorldPosition;
+    public Quaternion StageWorldRotation => Quaternion.Euler(stageWorldEulerAngles);
+    public float FallbackPlayerSpawnMinimumSpacing => Mathf.Max(0f, fallbackPlayerSpawnMinimumSpacing);
     public int ObjectiveSlotIndex => objectiveSlotIndex;
     public int StatueBoxCount => Mathf.Max(1, statueBoxCount);
     public int StatueBoxSlotIdBase => statueBoxSlotIdBase;
@@ -41,6 +54,7 @@ public class FinalMatchRuleDefinition : ScriptableObject
     public float StatueMaxHealth => Mathf.Max(1f, statueMaxHealth);
     public string StatueBoxId => string.IsNullOrWhiteSpace(statueBoxId) ? "basic_stat_box" : statueBoxId;
     public Color StatueTintColor => statueTintColor;
+    public float StatueMinimumSpacing => Mathf.Max(0f, statueMinimumSpacing);
 
     public float ResolveDuration(float fallbackDuration)
     {

@@ -75,6 +75,45 @@ public class ThirdPersonController : MonoBehaviour
         return true;
     }
 
+    public void TeleportTo(Vector3 worldPosition, Quaternion worldRotation)
+    {
+        // Move this controller instantly while clearing gravity, launch momentum, and temporary facing locks.
+        if (controller == null)
+        {
+            controller = GetComponent<CharacterController>();
+        }
+
+        bool controllerWasEnabled = controller != null && controller.enabled;
+        if (controllerWasEnabled)
+        {
+            controller.enabled = false;
+        }
+
+        transform.SetPositionAndRotation(worldPosition, worldRotation);
+
+        if (controllerWasEnabled)
+        {
+            controller.enabled = true;
+        }
+
+        verticalVelocity = 0f;
+        launchHorizontalVelocity = Vector3.zero;
+        launchMotionActive = false;
+        launchBecameAirborne = false;
+        launchStartedAt = 0f;
+        movementRotationLockedUntil = 0f;
+        cameraFacingLockedUntil = 0f;
+        cameraFacingLockTransform = null;
+
+        if (animationDriver == null)
+        {
+            animationDriver = GetComponent<PlayableCharacterAnimationDriver>();
+        }
+
+        animationDriver?.ResetMotionTracking();
+        Physics.SyncTransforms();
+    }
+
     public bool FaceCameraForwardImmediate(Transform facingCamera = null)
     {
         // Snap the character to the active camera yaw for attack-facing actions.

@@ -190,6 +190,19 @@ public class GameplayPickupManager : NetworkBehaviour
         }
     }
 
+    private readonly struct PlayerStageSnapshot
+    {
+        public readonly Vector3 Position;
+        public readonly Quaternion Rotation;
+
+        public PlayerStageSnapshot(Vector3 position, Quaternion rotation)
+        {
+            // Preserve one player's main-stage transform for restoration after the final match.
+            Position = position;
+            Rotation = rotation;
+        }
+    }
+
     private interface IFinalMatchRuleHandler
     {
         FinalMatchRuleType RuleType { get; }
@@ -497,6 +510,10 @@ public class GameplayPickupManager : NetworkBehaviour
     [SerializeField] private bool loadFinalMatchRuleDefinitionsFromResources = true;
     [SerializeField] private string finalMatchRuleResourcesPath = DefaultFinalMatchRuleResourcesPath;
 
+    [Header("Match Stage Lifecycle")]
+    [SerializeField] private GameObject[] mainStageObjects = System.Array.Empty<GameObject>();
+    [SerializeField] private string[] fallbackMainStageRootNames = { "Ground", "JumpPlatform" };
+
     [Header("Spawn Area")]
     [SerializeField] private Vector2 xRange = new(-18f, 18f);
     [SerializeField] private Vector2 zRange = new(-18f, 18f);
@@ -566,7 +583,11 @@ public class GameplayPickupManager : NetworkBehaviour
     private readonly Dictionary<int, BoxSlot> boxSlots = new();
     private readonly Dictionary<int, PenguinSlot> penguinSlots = new();
     private readonly Dictionary<ulong, int> finalStatueBreakScores = new();
+    private readonly Dictionary<ulong, PlayerStageSnapshot> preFinalPlayerTransforms = new();
     private readonly Dictionary<ulong, float> nextHookRequestTimes = new();
+    private readonly List<GameObject> resolvedMainStageObjects = new();
+    private readonly List<Transform> finalStageSpawnPoints = new();
+    private readonly List<Vector3> reservedFinalStagePositions = new();
     private PlayerStatsState statsState;
     private MatchStateController matchStateController;
     private float nextScanTime;
@@ -578,6 +599,9 @@ public class GameplayPickupManager : NetworkBehaviour
     private PenguinSuddenEventDefinition activePenguinEventDefinition;
     private FinalMatchRuleDefinition activeFinalMatchRuleDefinition;
     private IFinalMatchRuleHandler activeFinalMatchRuleHandler;
+    private GameObject activeFinalStageInstance;
+    private FinalMatchStageRuntime activeFinalStageRuntime;
+    private string activeFinalStageRuleId;
     private float activeSuddenEventEndTime;
     private float nextPenguinNetworkSyncTime;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
@@ -630,6 +654,7 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         Instance = this;
+        ResolveMainStageObjects();
     }
 
     public override void OnNetworkSpawn()
@@ -661,6 +686,9 @@ public class GameplayPickupManager : NetworkBehaviour
     public override void OnNetworkDespawn()
     {
         StopSuddenEventSchedule();
+        DestroyLocalFinalMatchStage();
+        SetMainStageActive(true);
+        preFinalPlayerTransforms.Clear();
 
         // 서버 전용 이벤트 구독을 해제해 재시작/씬 정리 때 중복 호출을 방지.
         if (IsServer && matchStateController != null && matchStateController.IsSpawned)
@@ -714,17 +742,19 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             case NetworkMatchState.Lobby:
                 StopSuddenEventSchedule();
-                StopFinalMatchObjective();
+                StopFinalMatchObjective(clearPreparedRule: true);
                 ClearAllPickups();
                 ClearAllBoxItems();
+                ExitFinalMatchStage(restorePlayers: true);
                 ResetFinalStatueBreakScores();
                 statsState?.ResetStats();
                 break;
             case NetworkMatchState.MatchMain:
                 StopSuddenEventSchedule();
-                StopFinalMatchObjective();
+                StopFinalMatchObjective(clearPreparedRule: true);
                 ClearAllPickups();
                 ClearAllBoxItems();
+                ExitFinalMatchStage(restorePlayers: true);
                 ResetFinalStatueBreakScores();
                 NetworkPlayerEquipmentState.EquipDefaultForAll();
                 NetworkPlayerCombatState.ResetForMatchStartForAll();
@@ -736,22 +766,24 @@ public class GameplayPickupManager : NetworkBehaviour
                 break;
             case NetworkMatchState.FinalTransition:
                 StopSuddenEventSchedule();
-                StopFinalMatchObjective();
+                StopFinalMatchObjective(clearPreparedRule: true);
                 ClearAllPickups();
                 ClearAllBoxItems();
+                PrepareFinalMatchStage();
                 break;
             case NetworkMatchState.FinalMatch:
                 StopSuddenEventSchedule();
-                StopFinalMatchObjective();
+                StopFinalMatchObjective(clearPreparedRule: false);
                 ClearAllPickups();
                 ClearAllBoxItems();
+                EnsureFinalMatchStagePrepared();
                 NetworkPlayerEquipmentState.EquipDefaultForUnequippedAll();
                 NetworkPlayerCombatState.ResetForMatchStartForAll();
                 StartFinalMatchObjective();
                 break;
             case NetworkMatchState.Result:
                 StopSuddenEventSchedule();
-                StopFinalMatchObjective();
+                StopFinalMatchObjective(clearPreparedRule: false);
                 ClearAllPickups();
                 ClearAllBoxItems();
                 break;
@@ -1348,8 +1380,8 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void StartFinalMatchObjective()
     {
-        // Resolve data from ScriptableObject, then let the matching handler own the runtime behavior.
-        activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
+        // Use the rule prepared during transition so stage, timer, and objective always stay in sync.
+        EnsureFinalMatchStagePrepared();
         activeFinalMatchRuleHandler = CreateFinalMatchRuleHandler(activeFinalMatchRuleDefinition);
         activeFinalMatchRuleHandler.Start(activeFinalMatchRuleDefinition);
 
@@ -1368,38 +1400,493 @@ public class GameplayPickupManager : NetworkBehaviour
         activeFinalMatchRuleHandler?.ResolveOnTimer();
     }
 
-    private void StopFinalMatchObjective()
+    private void StopFinalMatchObjective(bool clearPreparedRule)
     {
-        // Drop references to the active final rule runner when leaving final-match flow.
+        // Stop the active rule handler while optionally retaining its stage data through the Result state.
         activeFinalMatchRuleHandler?.Stop();
         activeFinalMatchRuleHandler = null;
-        activeFinalMatchRuleDefinition = null;
+        if (clearPreparedRule)
+        {
+            activeFinalMatchRuleDefinition = null;
+        }
     }
 
     public float ResolveFinalMatchDuration(float fallbackDuration)
     {
-        // MatchStateController asks this before entering final match so rule assets can tune duration.
-        FinalMatchRuleDefinition definition = ResolveFinalMatchRuleDefinition();
+        // Use the already selected transition rule so random rule selection cannot change before FinalMatch.
+        FinalMatchRuleDefinition definition = activeFinalMatchRuleDefinition;
+        if (definition == null)
+        {
+            definition = ResolveFinalMatchRuleDefinition();
+            activeFinalMatchRuleDefinition = definition;
+        }
+
         return definition != null ? definition.ResolveDuration(fallbackDuration) : Mathf.Max(0f, fallbackDuration);
+    }
+
+    private void PrepareFinalMatchStage()
+    {
+        // Select one final rule, replace the main stage, and place every participant before FinalMatch begins.
+        CaptureMainStagePlayerTransforms();
+        activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
+        if (!ActivateFinalMatchStage(activeFinalMatchRuleDefinition))
+        {
+            Debug.LogWarning("[GameplayPickupManager] Final stage preparation failed; players remain on the main stage.");
+            return;
+        }
+
+        TeleportPlayersToFinalStage(activeFinalMatchRuleDefinition);
+    }
+
+    private void EnsureFinalMatchStagePrepared()
+    {
+        // Recover safely when a test jumps directly to FinalMatch without passing through FinalTransition.
+        if (activeFinalMatchRuleDefinition == null)
+        {
+            activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
+        }
+
+        if (activeFinalMatchRuleDefinition == null || activeFinalMatchRuleDefinition.StagePrefab == null)
+        {
+            return;
+        }
+
+        if (activeFinalStageInstance != null)
+        {
+            return;
+        }
+
+        if (preFinalPlayerTransforms.Count == 0)
+        {
+            CaptureMainStagePlayerTransforms();
+        }
+
+        if (ActivateFinalMatchStage(activeFinalMatchRuleDefinition))
+        {
+            TeleportPlayersToFinalStage(activeFinalMatchRuleDefinition);
+        }
+    }
+
+    private bool ActivateFinalMatchStage(FinalMatchRuleDefinition definition)
+    {
+        // Instantiate the selected stage locally on the server, then request the same static stage on clients.
+        if (!IsServer || definition == null || definition.StagePrefab == null)
+        {
+            return false;
+        }
+
+        SetMainStageActive(false);
+        if (!CreateLocalFinalMatchStage(definition))
+        {
+            SetMainStageActive(true);
+            return false;
+        }
+
+        ActivateFinalMatchStageClientRpc(new FixedString64Bytes(definition.RuleId));
+        return true;
+    }
+
+    private bool CreateLocalFinalMatchStage(FinalMatchRuleDefinition definition)
+    {
+        // Create one unparented stage instance while preserving every scale value authored in the prefab.
+        DestroyLocalFinalMatchStage();
+        if (definition == null || definition.StagePrefab == null)
+        {
+            return false;
+        }
+
+        GameObject stagePrefab = definition.StagePrefab;
+        activeFinalStageInstance = Instantiate(
+            stagePrefab,
+            definition.StageWorldPosition,
+            definition.StageWorldRotation);
+        activeFinalStageInstance.name = $"{stagePrefab.name}_Runtime";
+        activeFinalStageRuntime = activeFinalStageInstance.GetComponent<FinalMatchStageRuntime>();
+        activeFinalStageRuleId = definition.RuleId;
+        Physics.SyncTransforms();
+
+        if (activeFinalStageRuntime == null)
+        {
+            Debug.LogError($"[GameplayPickupManager] Final stage '{stagePrefab.name}' is missing FinalMatchStageRuntime.");
+            DestroyLocalFinalMatchStage();
+            return false;
+        }
+
+        Debug.Log(
+            $"[GameplayPickupManager] Final stage activated ruleId={definition.RuleId} " +
+            $"position={activeFinalStageInstance.transform.position} scale={activeFinalStageInstance.transform.localScale}");
+        return true;
+    }
+
+    private void ExitFinalMatchStage(bool restorePlayers)
+    {
+        // Restore the main stage first, remove the final stage on every peer, then return players safely.
+        bool hadFinalStage = activeFinalStageInstance != null || !string.IsNullOrWhiteSpace(activeFinalStageRuleId);
+        DestroyLocalFinalMatchStage();
+        SetMainStageActive(true);
+
+        if (IsServer && IsSpawned && hadFinalStage)
+        {
+            DeactivateFinalMatchStageClientRpc();
+        }
+
+        if (restorePlayers)
+        {
+            RestorePlayersToMainStage();
+        }
+        else
+        {
+            preFinalPlayerTransforms.Clear();
+        }
+    }
+
+    private void DestroyLocalFinalMatchStage()
+    {
+        // Disable and destroy only the runtime final-stage instance owned by this peer.
+        if (activeFinalStageInstance != null)
+        {
+            activeFinalStageInstance.SetActive(false);
+            Destroy(activeFinalStageInstance);
+        }
+
+        activeFinalStageInstance = null;
+        activeFinalStageRuntime = null;
+        activeFinalStageRuleId = null;
+    }
+
+    private void ResolveMainStageObjects()
+    {
+        // Cache explicitly assigned objects or current-scene roots before any final-stage prefab is created.
+        resolvedMainStageObjects.Clear();
+        if (mainStageObjects != null)
+        {
+            for (int i = 0; i < mainStageObjects.Length; i++)
+            {
+                AddResolvedMainStageObject(mainStageObjects[i]);
+            }
+        }
+
+        if (fallbackMainStageRootNames == null || fallbackMainStageRootNames.Length == 0)
+        {
+            return;
+        }
+
+        GameObject[] sceneRoots = gameObject.scene.IsValid()
+            ? gameObject.scene.GetRootGameObjects()
+            : UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
+        for (int rootIndex = 0; rootIndex < sceneRoots.Length; rootIndex++)
+        {
+            GameObject sceneRoot = sceneRoots[rootIndex];
+            for (int nameIndex = 0; nameIndex < fallbackMainStageRootNames.Length; nameIndex++)
+            {
+                if (sceneRoot != null && sceneRoot.name == fallbackMainStageRootNames[nameIndex])
+                {
+                    AddResolvedMainStageObject(sceneRoot);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void AddResolvedMainStageObject(GameObject stageObject)
+    {
+        // Add one non-null main-stage object without creating duplicate activation entries.
+        if (stageObject != null && !resolvedMainStageObjects.Contains(stageObject))
+        {
+            resolvedMainStageObjects.Add(stageObject);
+        }
+    }
+
+    private void SetMainStageActive(bool active)
+    {
+        // Toggle only the cached main-gameplay terrain while leaving network and UI scene objects untouched.
+        for (int i = 0; i < resolvedMainStageObjects.Count; i++)
+        {
+            GameObject stageObject = resolvedMainStageObjects[i];
+            if (stageObject != null && stageObject.activeSelf != active)
+            {
+                stageObject.SetActive(active);
+            }
+        }
+    }
+
+    private void CaptureMainStagePlayerTransforms()
+    {
+        // Save each connected player's server transform before moving them into the final stage.
+        preFinalPlayerTransforms.Clear();
+        if (!IsServer || NetworkManager.Singleton == null)
+        {
+            return;
+        }
+
+        foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
+        {
+            if (!TryGetPlayerObject(clientId, out NetworkObject playerObject))
+            {
+                continue;
+            }
+
+            preFinalPlayerTransforms[clientId] = new PlayerStageSnapshot(
+                playerObject.transform.position,
+                playerObject.transform.rotation);
+        }
+    }
+
+    private void TeleportPlayersToFinalStage(FinalMatchRuleDefinition definition)
+    {
+        // Shuffle authored SpawnPoints once and assign each connected player a unique final-stage pose.
+        if (!IsServer || NetworkManager.Singleton == null || activeFinalStageRuntime == null)
+        {
+            return;
+        }
+
+        activeFinalStageRuntime.CopySpawnPoints(finalStageSpawnPoints);
+        ShuffleTransforms(finalStageSpawnPoints);
+        reservedFinalStagePositions.Clear();
+
+        List<ulong> participantIds = new(NetworkManager.Singleton.ConnectedClientsIds);
+        for (int i = 0; i < participantIds.Count; i++)
+        {
+            Vector3 spawnPosition;
+            Quaternion spawnRotation;
+            if (i < finalStageSpawnPoints.Count)
+            {
+                Transform spawnPoint = finalStageSpawnPoints[i];
+                spawnPosition = spawnPoint.position;
+                spawnRotation = spawnPoint.rotation;
+            }
+            else if (activeFinalStageRuntime.TryGetRandomGroundPosition(
+                0f,
+                reservedFinalStagePositions,
+                definition != null ? definition.FallbackPlayerSpawnMinimumSpacing : 4f,
+                out spawnPosition))
+            {
+                spawnRotation = Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f);
+            }
+            else
+            {
+                Debug.LogError($"[GameplayPickupManager] No unique final-stage spawn position for clientId={participantIds[i]}.");
+                continue;
+            }
+
+            reservedFinalStagePositions.Add(spawnPosition);
+            TeleportNetworkPlayer(participantIds[i], spawnPosition, spawnRotation);
+        }
+
+        Debug.Log(
+            $"[GameplayPickupManager] Final-stage players placed count={reservedFinalStagePositions.Count} " +
+            $"authoredSpawnPoints={finalStageSpawnPoints.Count}");
+    }
+
+    private void RestorePlayersToMainStage()
+    {
+        // Return still-connected players to their recorded main-stage transforms without reusing final SpawnPoints.
+        if (!IsServer || preFinalPlayerTransforms.Count == 0)
+        {
+            preFinalPlayerTransforms.Clear();
+            return;
+        }
+
+        foreach (KeyValuePair<ulong, PlayerStageSnapshot> pair in preFinalPlayerTransforms)
+        {
+            if (TryGetPlayerObject(pair.Key, out _))
+            {
+                TeleportNetworkPlayer(pair.Key, pair.Value.Position, pair.Value.Rotation);
+            }
+        }
+
+        preFinalPlayerTransforms.Clear();
+    }
+
+    private void TeleportNetworkPlayer(ulong clientId, Vector3 position, Quaternion rotation)
+    {
+        // Apply the server copy immediately and send the same teleport to the owner-authoritative client.
+        if (!TryGetPlayerObject(clientId, out NetworkObject playerObject))
+        {
+            return;
+        }
+
+        ThirdPersonController controller = playerObject.GetComponent<ThirdPersonController>();
+        if (controller != null)
+        {
+            controller.TeleportTo(position, rotation);
+        }
+        else
+        {
+            playerObject.transform.SetPositionAndRotation(position, rotation);
+            Physics.SyncTransforms();
+        }
+
+        TeleportLocalPlayerClientRpc(position, rotation, CreateTargetClientRpcParams(clientId));
+    }
+
+    private static void ShuffleTransforms(List<Transform> transforms)
+    {
+        // Shuffle SpawnPoints with Fisher-Yates so every point remains unique within one assignment pass.
+        for (int i = transforms.Count - 1; i > 0; i--)
+        {
+            int swapIndex = UnityEngine.Random.Range(0, i + 1);
+            (transforms[i], transforms[swapIndex]) = (transforms[swapIndex], transforms[i]);
+        }
+    }
+
+    private static ClientRpcParams CreateTargetClientRpcParams(ulong clientId)
+    {
+        // Build one owner-targeted RPC envelope for player teleport and late-join stage synchronization.
+        return new ClientRpcParams
+        {
+            Send = new ClientRpcSendParams
+            {
+                TargetClientIds = new[] { clientId }
+            }
+        };
+    }
+
+    [ClientRpc]
+    private void ActivateFinalMatchStageClientRpc(FixedString64Bytes ruleId, ClientRpcParams rpcParams = default)
+    {
+        // Replace the main stage with the exact server-selected final-stage prefab on non-server clients.
+        if (IsServer)
+        {
+            return;
+        }
+
+        FinalMatchRuleDefinition definition = ResolveFinalMatchRuleDefinitionById(ruleId.ToString());
+        if (definition == null)
+        {
+            Debug.LogError($"[GameplayPickupManager] Client could not resolve final rule '{ruleId}'.");
+            return;
+        }
+
+        SetMainStageActive(false);
+        if (!CreateLocalFinalMatchStage(definition))
+        {
+            SetMainStageActive(true);
+        }
+    }
+
+    [ClientRpc]
+    private void DeactivateFinalMatchStageClientRpc(ClientRpcParams rpcParams = default)
+    {
+        // Remove the final-stage copy and restore cached main terrain on non-server clients.
+        if (IsServer)
+        {
+            return;
+        }
+
+        DestroyLocalFinalMatchStage();
+        SetMainStageActive(true);
+    }
+
+    [ClientRpc]
+    private void TeleportLocalPlayerClientRpc(Vector3 position, Quaternion rotation, ClientRpcParams rpcParams = default)
+    {
+        // Snap the targeted owner's local CharacterController to the server-assigned stage position.
+        NetworkObject localPlayerObject = NetworkManager.Singleton?.SpawnManager?.GetLocalPlayerObject();
+        if (localPlayerObject == null)
+        {
+            Debug.LogWarning("[GameplayPickupManager] Local player was unavailable for stage teleport.");
+            return;
+        }
+
+        ThirdPersonController controller = localPlayerObject.GetComponent<ThirdPersonController>();
+        if (controller != null)
+        {
+            controller.TeleportTo(position, rotation);
+            return;
+        }
+
+        localPlayerObject.transform.SetPositionAndRotation(position, rotation);
+        Physics.SyncTransforms();
+    }
+
+    private FinalMatchRuleDefinition ResolveFinalMatchRuleDefinitionById(string ruleId)
+    {
+        // Resolve the exact rule selected by the server from an explicit scene reference or Resources assets.
+        if (finalMatchRuleDefinition != null && finalMatchRuleDefinition.RuleId == ruleId)
+        {
+            return finalMatchRuleDefinition;
+        }
+
+        List<FinalMatchRuleDefinition> definitions = ResolveFinalMatchRuleDefinitions();
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            FinalMatchRuleDefinition definition = definitions[i];
+            if (definition != null && definition.RuleId == ruleId)
+            {
+                return definition;
+            }
+        }
+
+        return null;
     }
 
     private void SpawnFinalStatueBreakBoxes(FinalMatchRuleDefinition definition)
     {
-        // Spawn score-only statue boxes. They use the normal box visuals but never drop loot.
+        // Spawn score-only statues exclusively on validated ground belonging to the active final stage.
         int count = ResolveFinalStatueBoxCount(definition);
         int slotIdBase = ResolveFinalStatueBoxSlotIdBase(definition);
+        int spawnedCount = 0;
         for (int i = 0; i < count; i++)
         {
-            ActivateFinalStatueBreakBox(slotIdBase + i, GetRandomSpawnPosition(), definition);
+            int slotId = slotIdBase + i;
+            if (TryActivateFinalStatueBreakBox(slotId, definition))
+            {
+                spawnedCount++;
+                continue;
+            }
+
+            BoxSlot slot = GetOrCreateBoxSlot(slotId);
+            slot.RespawnRoutine = StartCoroutine(RespawnFinalStatueBoxAfterDelay(slotId, definition));
         }
 
-        Debug.Log($"[GameplayPickupManager] Final statue boxes spawned count={count}");
+        Debug.Log($"[GameplayPickupManager] Final statue boxes spawned count={spawnedCount}/{count}");
     }
 
-    private void ActivateFinalStatueBreakBox(int slotId, Vector3 position, FinalMatchRuleDefinition definition)
+    private bool TryActivateFinalStatueBreakBox(int slotId, FinalMatchRuleDefinition definition)
     {
-        // Score boxes share the basic box presentation and health tuning, but are marked as no-loot objectives.
-        ActivateBoxItem(slotId, position, CreateFinalStatueBoxVariant(definition), finalScoreBox: true, startTimedDespawn: false);
+        // Reserve one valid StageGround point and activate a no-loot score statue there.
+        if (!TryGetFinalStatueSpawnPosition(definition, out Vector3 position))
+        {
+            Debug.LogWarning($"[GameplayPickupManager] Could not find StageGround spawn for final statue slot={slotId}.");
+            return false;
+        }
+
+        ActivateBoxItem(
+            slotId,
+            position,
+            CreateFinalStatueBoxVariant(definition),
+            finalScoreBox: true,
+            startTimedDespawn: false,
+            resolveGroundPosition: false);
+        return true;
+    }
+
+    private bool TryGetFinalStatueSpawnPosition(FinalMatchRuleDefinition definition, out Vector3 position)
+    {
+        // Sample the active stage floor while keeping new statues separated from every active score statue.
+        position = default;
+        if (activeFinalStageRuntime == null)
+        {
+            return false;
+        }
+
+        reservedFinalStagePositions.Clear();
+        foreach (KeyValuePair<int, BoxSlot> pair in boxSlots)
+        {
+            BoxSlot slot = pair.Value;
+            if (slot != null && slot.Active && slot.FinalScoreBox)
+            {
+                reservedFinalStagePositions.Add(slot.Position);
+            }
+        }
+
+        float minimumSpacing = definition != null ? definition.StatueMinimumSpacing : 5f;
+        return activeFinalStageRuntime.TryGetRandomGroundPosition(
+            boxGroundOffset,
+            reservedFinalStagePositions,
+            minimumSpacing,
+            out position);
     }
 
     private BoxVariantDefinition CreateFinalStatueBoxVariant(FinalMatchRuleDefinition definition)
@@ -1662,10 +2149,16 @@ public class GameplayPickupManager : NetworkBehaviour
         ActivateBoxItem(slotId, position, variant, finalScoreBox: false, startTimedDespawn: true);
     }
 
-    private void ActivateBoxItem(int slotId, Vector3 position, BoxVariantDefinition variant, bool finalScoreBox, bool startTimedDespawn)
+    private void ActivateBoxItem(
+        int slotId,
+        Vector3 position,
+        BoxVariantDefinition variant,
+        bool finalScoreBox,
+        bool startTimedDespawn,
+        bool resolveGroundPosition = true)
     {
-        // Initialize a destructible box with variant-specific health, tint, and pre-rolled loot.
-        Vector3 resolvedPosition = ResolveBoxGroundedPosition(position);
+        // Initialize a destructible box while preserving final-stage points that were already ground-validated.
+        Vector3 resolvedPosition = resolveGroundPosition ? ResolveBoxGroundedPosition(position) : position;
         BoxVariantDefinition resolvedVariant = ResolveBoxVariant(variant);
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.Active = true;
@@ -3114,7 +3607,10 @@ public class GameplayPickupManager : NetworkBehaviour
 
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
         slot.RespawnRoutine = null;
-        ActivateFinalStatueBreakBox(slotId, GetRandomSpawnPosition(), definition);
+        if (!TryActivateFinalStatueBreakBox(slotId, definition))
+        {
+            slot.RespawnRoutine = StartCoroutine(RespawnFinalStatueBoxAfterDelay(slotId, definition));
+        }
     }
 
     private void ResetFinalStatueBreakScores()

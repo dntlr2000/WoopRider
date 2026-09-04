@@ -108,6 +108,13 @@ public class PlayableCharacterAnimationDriver : MonoBehaviour
         PlayTriggerOrActionState(jumpHash, jumpStateName, jumpActionDuration);
     }
 
+    public void ResetMotionTracking()
+    {
+        // Reset transform-delta tracking after a teleport so it does not produce a false movement spike.
+        lastPosition = transform.position;
+        wasGrounded = ResolveGrounded();
+    }
+
     public void TriggerDamaged()
     {
         // Play the damaged one-shot animation.

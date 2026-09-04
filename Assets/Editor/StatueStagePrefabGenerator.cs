@@ -15,6 +15,7 @@ public static class StatueStagePrefabGenerator
     private const string CollisionRootName = "Collision";
     private const string GroundRootName = "Ground";
     private const string WallRootName = "Wall";
+    private const string SpawnPointRootName = "SpawnPoint";
     private const string GroundLayerName = "StageGround";
     private const string WallLayerName = "StageWall";
     private const string GroundTag = "Ground";
@@ -40,6 +41,16 @@ public static class StatueStagePrefabGenerator
         "Light"
     };
 
+    private static readonly Vector3[] DefaultSpawnPointPositions =
+    {
+        new(-36.6f, 6.7f, 0f),
+        new(36.6f, 6.7f, 0f),
+        new(0f, 6.7f, 36.6f),
+        new(0f, 6.7f, -36.6f),
+        new(-23.8f, 32.6f, 25.3f),
+        new(23.8f, 32.6f, -25.3f)
+    };
+
     [MenuItem("Tools/WoopRider/Generate Statue Stage Prefab")]
     public static void Generate()
     {
@@ -58,7 +69,27 @@ public static class StatueStagePrefabGenerator
                 throw new InvalidOperationException($"Model asset not found at {ModelPath}.");
             }
 
-            prefabRoot = new GameObject("StatueStage");
+            GameObject existingPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
+            if (existingPrefab != null)
+            {
+                prefabRoot = PrefabUtility.InstantiatePrefab(existingPrefab) as GameObject;
+                if (prefabRoot == null)
+                {
+                    throw new InvalidOperationException($"Could not instantiate existing prefab at {PrefabPath}.");
+                }
+
+                PrefabUtility.UnpackPrefabInstance(
+                    prefabRoot,
+                    PrefabUnpackMode.OutermostRoot,
+                    InteractionMode.AutomatedAction);
+                RemoveGeneratedRoot(prefabRoot.transform, VisualRootName);
+                RemoveGeneratedRoot(prefabRoot.transform, CollisionRootName);
+            }
+            else
+            {
+                prefabRoot = new GameObject("StatueStage");
+            }
+
             GameObject visualRoot = PrefabUtility.InstantiatePrefab(modelAsset) as GameObject;
             if (visualRoot == null)
             {
@@ -123,6 +154,8 @@ public static class StatueStagePrefabGenerator
                     UntaggedTag);
             }
 
+            ConfigureFinalMatchRuntime(prefabRoot);
+
             GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(prefabRoot, PrefabPath);
             if (savedPrefab == null)
             {
@@ -147,6 +180,56 @@ public static class StatueStagePrefabGenerator
         Debug.Log(
             $"[StatueStagePrefabGenerator] Generated layered collider prefab at {PrefabPath} " +
             $"with a {MaxGroundAngle:0.#}-degree ground threshold.");
+    }
+
+    private static void RemoveGeneratedRoot(Transform prefabRoot, string childName)
+    {
+        // Replace only generated visual or collision roots while preserving authored stage objects and scale.
+        Transform generatedRoot = prefabRoot != null ? prefabRoot.Find(childName) : null;
+        if (generatedRoot != null)
+        {
+            UnityEngine.Object.DestroyImmediate(generatedRoot.gameObject);
+        }
+    }
+
+    private static void ConfigureFinalMatchRuntime(GameObject prefabRoot)
+    {
+        // Preserve authored SpawnPoints and bind them to the final-stage runtime component after regeneration.
+        Transform spawnPointRoot = prefabRoot.transform.Find(SpawnPointRootName);
+        if (spawnPointRoot == null)
+        {
+            GameObject spawnPointObject = CreateHierarchyRoot(
+                prefabRoot.transform,
+                SpawnPointRootName,
+                0,
+                UntaggedTag);
+            spawnPointRoot = spawnPointObject.transform;
+            CreateDefaultSpawnPoints(spawnPointRoot);
+        }
+
+        FinalMatchStageRuntime stageRuntime = prefabRoot.GetComponent<FinalMatchStageRuntime>();
+        if (stageRuntime == null)
+        {
+            stageRuntime = prefabRoot.AddComponent<FinalMatchStageRuntime>();
+        }
+
+        SerializedObject serializedRuntime = new(stageRuntime);
+        serializedRuntime.FindProperty("spawnPointRoot").objectReferenceValue = spawnPointRoot;
+        serializedRuntime.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(stageRuntime);
+    }
+
+    private static void CreateDefaultSpawnPoints(Transform spawnPointRoot)
+    {
+        // Seed a newly generated stage with six non-overlapping positions matching its two playable floors.
+        for (int i = 0; i < DefaultSpawnPointPositions.Length; i++)
+        {
+            GameObject spawnPoint = new($"Spawn{i + 1}");
+            spawnPoint.transform.SetParent(spawnPointRoot, false);
+            spawnPoint.transform.localPosition = DefaultSpawnPointPositions[i];
+            spawnPoint.transform.localRotation = Quaternion.identity;
+            spawnPoint.transform.localScale = Vector3.one;
+        }
     }
 
     private static void EnsureOutputFolders()
@@ -470,6 +553,16 @@ public static class StatueStagePrefabGenerator
         {
             throw new InvalidOperationException(
                 "StatueStage prefab is missing its Visual, Collision, Ground, or Wall root.");
+        }
+
+        Transform spawnPointRoot = prefab.transform.Find(SpawnPointRootName);
+        FinalMatchStageRuntime stageRuntime = prefab.GetComponent<FinalMatchStageRuntime>();
+        if (spawnPointRoot == null ||
+            spawnPointRoot.childCount < DefaultSpawnPointPositions.Length ||
+            stageRuntime == null)
+        {
+            throw new InvalidOperationException(
+                "StatueStage prefab must retain six SpawnPoints and a FinalMatchStageRuntime component.");
         }
 
         if (groundRoot.gameObject.layer != groundLayer ||

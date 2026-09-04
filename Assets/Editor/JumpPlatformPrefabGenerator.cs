@@ -14,6 +14,7 @@ public static class JumpPlatformPrefabGenerator
     private const string PrefabPath = OutputFolder + "/JumpPlatform.prefab";
     private const string InactivePosePath = OutputFolder + "/JumpPlatform_InActivate.anim";
     private const string OriginPosePath = OutputFolder + "/JumpPlatform_origin.anim";
+    private const string ActivationSfxPath = "Assets/Sounds/SFX/freesound_community-coin-2-47744.mp3";
     private const string ActivateParameter = "Activate";
     private const string InactivateParameter = "InActivate";
     private const string OriginParameter = "Origin";
@@ -634,10 +635,22 @@ public static class JumpPlatformPrefabGenerator
         launchTrigger.center = Vector3.zero;
         launchTrigger.size = new Vector3(2f, 0.5f, 2f);
 
-        if (prefabRoot.GetComponent<JumpPlatform>() == null)
+        JumpPlatform jumpPlatform = prefabRoot.GetComponent<JumpPlatform>();
+        if (jumpPlatform == null)
         {
-            prefabRoot.AddComponent<JumpPlatform>();
+            jumpPlatform = prefabRoot.AddComponent<JumpPlatform>();
         }
+
+        AudioClip activationSfx = AssetDatabase.LoadAssetAtPath<AudioClip>(ActivationSfxPath);
+        if (activationSfx == null)
+        {
+            throw new InvalidOperationException($"JumpPlatform activation SFX was not found at {ActivationSfxPath}.");
+        }
+
+        SerializedObject serializedJumpPlatform = new(jumpPlatform);
+        serializedJumpPlatform.FindProperty("activationSfxClip").objectReferenceValue = activationSfx;
+        serializedJumpPlatform.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(jumpPlatform);
     }
 
     private static void ValidateGeneratedAssets(
@@ -658,9 +671,19 @@ public static class JumpPlatformPrefabGenerator
         }
 
         Collider launchTrigger = prefab.GetComponent<Collider>();
-        if (prefab.GetComponent<JumpPlatform>() == null || launchTrigger == null || !launchTrigger.isTrigger)
+        JumpPlatform jumpPlatform = prefab.GetComponent<JumpPlatform>();
+        SerializedObject serializedJumpPlatform = jumpPlatform != null ? new SerializedObject(jumpPlatform) : null;
+        AudioClip activationSfx = serializedJumpPlatform != null
+            ? serializedJumpPlatform.FindProperty("activationSfxClip").objectReferenceValue as AudioClip
+            : null;
+        if (jumpPlatform == null ||
+            launchTrigger == null ||
+            !launchTrigger.isTrigger ||
+            activationSfx == null ||
+            AssetDatabase.GetAssetPath(activationSfx) != ActivationSfxPath)
         {
-            throw new InvalidOperationException("JumpPlatform prefab is missing its launch behaviour or trigger collider.");
+            throw new InvalidOperationException(
+                "JumpPlatform prefab is missing its launch behaviour, trigger collider, or activation SFX.");
         }
 
         Dictionary<string, AnimatorState> statesByName = controller.layers[0].stateMachine.states

@@ -365,6 +365,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 3062811009632025511}
+  - component: {fileID: 7620944318828176301}
   m_Layer: 0
   m_Name: StatueStage
   m_TagString: Untagged
@@ -391,6 +392,32 @@ Transform:
   - {fileID: 520765839898648297}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &7620944318828176301
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6809379511837206155}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a81d6134b5d3499abf7f8376c8f26974, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  spawnPointRoot: {fileID: 520765839898648297}
+  groundLayerMask:
+    serializedVersion: 2
+    m_Bits: 256
+  requiredGroundTag: Ground
+  minimumGroundNormalY: 0.7
+  raycastHeight: 2
+  raycastDistance: 10
+  randomPositionAttempts: 64
+  blockedSpawnLayerMask:
+    serializedVersion: 2
+    m_Bits: 513
+  blockedSpawnRadius: 2.4
+  blockedSpawnHeight: 1.2
 --- !u!1 &6949757429975668478
 GameObject:
   m_ObjectHideFlags: 0
@@ -584,6 +611,10 @@ PrefabInstance:
     - target: {fileID: 465748365064162290, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
       propertyPath: m_Name
       value: JumpPlatform
+      objectReference: {fileID: 0}
+    - target: {fileID: 5580232890622363158, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
+      propertyPath: launchStrength
+      value: 40
       objectReference: {fileID: 0}
     - target: {fileID: 6997127915212287816, guid: 0d79deb66f33c064a8ee3d6e12862ca2, type: 3}
       propertyPath: m_LocalScale.x

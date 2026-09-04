@@ -19,10 +19,15 @@ MonoBehaviour:
   enabledInPool: 1
   selectionWeight: 1
   durationOverride: 0
+  stagePrefab: {fileID: 6809379511837206155, guid: 923fc20a96b1864428c038087480f688, type: 3}
+  stageWorldPosition: {x: 0, y: 0, z: 0}
+  stageWorldEulerAngles: {x: 0, y: 0, z: 0}
+  fallbackPlayerSpawnMinimumSpacing: 4
   objectiveSlotIndex: 1000
-  statueBoxCount: 6
+  statueBoxCount: 12
   statueBoxSlotIdBase: 9000
   statueRespawnDelay: 2
   statueMaxHealth: 100
   statueBoxId: basic_stat_box
   statueTintColor: {r: 1, g: 1, b: 1, a: 1}
+  statueMinimumSpacing: 5

@@ -71,6 +71,8 @@ MonoBehaviour:
   launchStrength: 12
   useLocalDirection: 1
   retriggerCooldown: 0.25
+  activationSfxClip: {fileID: 8300000, guid: 8d76e99e72634b442b25512920fb9157, type: 3}
+  activationSfxVolumeScale: 1
 --- !u!1001 &2410351682893702877
 PrefabInstance:
   m_ObjectHideFlags: 0

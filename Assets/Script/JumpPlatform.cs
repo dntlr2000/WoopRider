@@ -18,6 +18,13 @@ public sealed class JumpPlatform : MonoBehaviour
     [SerializeField, Min(0f), Tooltip("Minimum time before the same player can trigger this platform again.")]
     private float retriggerCooldown = 0.25f;
 
+    [Header("Audio")]
+    [SerializeField, Tooltip("Positional one-shot played for the player who successfully triggers this platform.")]
+    private AudioClip activationSfxClip;
+
+    [SerializeField, Range(0f, 1f), Tooltip("Volume scale applied through SoundManager's SFX channel.")]
+    private float activationSfxVolumeScale = 1f;
+
     private readonly Dictionary<int, float> nextLaunchTimes = new();
     private Collider launchTrigger;
 
@@ -43,6 +50,7 @@ public sealed class JumpPlatform : MonoBehaviour
         // Keep inspector-authored launch settings within usable ranges.
         launchStrength = Mathf.Max(0f, launchStrength);
         retriggerCooldown = Mathf.Max(0f, retriggerCooldown);
+        activationSfxVolumeScale = Mathf.Clamp01(activationSfxVolumeScale);
         if (launchDirection.sqrMagnitude <= 0.0001f)
         {
             launchDirection = Vector3.up;
@@ -74,7 +82,15 @@ public sealed class JumpPlatform : MonoBehaviour
         if (player.ApplyLaunch(worldDirection, launchStrength))
         {
             nextLaunchTimes[playerId] = Time.time + retriggerCooldown;
+            PlayActivationSfx();
         }
+    }
+
+    private void PlayActivationSfx()
+    {
+        // Route successful local activation through the pooled 3D SFX channel at the platform position.
+        Vector3 soundPosition = launchTrigger != null ? launchTrigger.bounds.center : transform.position;
+        SoundManager.Instance?.PlayWorldSfx(activationSfxClip, soundPosition, activationSfxVolumeScale);
     }
 
     private Vector3 ResolveWorldLaunchDirection()
