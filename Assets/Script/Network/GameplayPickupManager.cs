@@ -4,6 +4,25 @@ using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
+public struct FinalMatchScoreEntry : INetworkSerializable, System.IEquatable<FinalMatchScoreEntry>
+{
+    public ulong ClientId;
+    public int Score;
+
+    public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
+    {
+        // Serialize one player's final-match score for NetworkList replication.
+        serializer.SerializeValue(ref ClientId);
+        serializer.SerializeValue(ref Score);
+    }
+
+    public bool Equals(FinalMatchScoreEntry other)
+    {
+        // Compare both fields so NetworkList can detect score changes.
+        return ClientId == other.ClientId && Score == other.Score;
+    }
+}
+
 public class GameplayPickupManager : NetworkBehaviour
 {
     private const string DefaultEquipmentSparkResourcePath = "Effects/CustomEffects/SmokeLeak_RedSparks";
@@ -24,7 +43,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private const string DefaultFinalMatchRuleResourcesPath = "FinalMatchRules";
     private const string DefaultFinalMatchRuleId = "break_statues";
     private const int DefaultFinalObjectiveSlotIndex = 1000;
-    private const int DefaultFinalStatueBoxCount = 6;
+    private const int DefaultFinalStatueBoxCount = 12;
+    private const float DefaultStagePlayerSpawnMinimumSpacing = 4f;
     private const int DefaultFinalStatueBoxSlotIdBase = 9000;
     private const float DefaultFinalStatueRespawnDelay = 2f;
     private const float DefaultFinalStatueMaxHealth = 100f;
@@ -41,6 +61,8 @@ public class GameplayPickupManager : NetworkBehaviour
     };
 
     public static GameplayPickupManager Instance { get; private set; }
+
+    public NetworkList<FinalMatchScoreEntry> FinalScores { get; private set; }
 
     public enum PickupKind : byte
     {
@@ -586,8 +608,8 @@ public class GameplayPickupManager : NetworkBehaviour
     private readonly Dictionary<ulong, PlayerStageSnapshot> preFinalPlayerTransforms = new();
     private readonly Dictionary<ulong, float> nextHookRequestTimes = new();
     private readonly List<GameObject> resolvedMainStageObjects = new();
-    private readonly List<Transform> finalStageSpawnPoints = new();
-    private readonly List<Vector3> reservedFinalStagePositions = new();
+    private readonly List<Transform> stageSpawnPoints = new();
+    private readonly List<Vector3> reservedStagePositions = new();
     private PlayerStatsState statsState;
     private MatchStateController matchStateController;
     private float nextScanTime;
@@ -599,6 +621,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private PenguinSuddenEventDefinition activePenguinEventDefinition;
     private FinalMatchRuleDefinition activeFinalMatchRuleDefinition;
     private IFinalMatchRuleHandler activeFinalMatchRuleHandler;
+    private FinalMatchStageRuntime activeMainStageRuntime;
     private GameObject activeFinalStageInstance;
     private FinalMatchStageRuntime activeFinalStageRuntime;
     private string activeFinalStageRuleId;
@@ -646,7 +669,9 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void Awake()
     {
-        // 아이템 매니저를 다른 게임플레이 스크립트에서 참조하기 위한 싱글턴 설정.
+        // Create replicated score storage and expose this gameplay manager through its singleton.
+        FinalScores = new NetworkList<FinalMatchScoreEntry>();
+
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
@@ -700,6 +725,18 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             NetworkManager.Singleton.OnClientConnectedCallback -= OnClientConnected;
         }
+    }
+
+    public override void OnDestroy()
+    {
+        // Release the replicated score list and singleton reference owned by this manager.
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+
+        FinalScores?.Dispose();
+        base.OnDestroy();
     }
 
     private void Update()
@@ -759,6 +796,7 @@ public class GameplayPickupManager : NetworkBehaviour
                 NetworkPlayerEquipmentState.EquipDefaultForAll();
                 NetworkPlayerCombatState.ResetForMatchStartForAll();
                 statsState?.ResetStats();
+                TeleportPlayersToMainStage();
                 SpawnMainMatchPickups();
                 SpawnEquipmentPickups();
                 SpawnBoxItems();
@@ -1566,26 +1604,26 @@ public class GameplayPickupManager : NetworkBehaviour
             }
         }
 
-        if (fallbackMainStageRootNames == null || fallbackMainStageRootNames.Length == 0)
+        if (fallbackMainStageRootNames != null && fallbackMainStageRootNames.Length > 0)
         {
-            return;
-        }
-
-        GameObject[] sceneRoots = gameObject.scene.IsValid()
-            ? gameObject.scene.GetRootGameObjects()
-            : UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
-        for (int rootIndex = 0; rootIndex < sceneRoots.Length; rootIndex++)
-        {
-            GameObject sceneRoot = sceneRoots[rootIndex];
-            for (int nameIndex = 0; nameIndex < fallbackMainStageRootNames.Length; nameIndex++)
+            GameObject[] sceneRoots = gameObject.scene.IsValid()
+                ? gameObject.scene.GetRootGameObjects()
+                : UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
+            for (int rootIndex = 0; rootIndex < sceneRoots.Length; rootIndex++)
             {
-                if (sceneRoot != null && sceneRoot.name == fallbackMainStageRootNames[nameIndex])
+                GameObject sceneRoot = sceneRoots[rootIndex];
+                for (int nameIndex = 0; nameIndex < fallbackMainStageRootNames.Length; nameIndex++)
                 {
-                    AddResolvedMainStageObject(sceneRoot);
-                    break;
+                    if (sceneRoot != null && sceneRoot.name == fallbackMainStageRootNames[nameIndex])
+                    {
+                        AddResolvedMainStageObject(sceneRoot);
+                        break;
+                    }
                 }
             }
         }
+
+        ResolveMainStageRuntime();
     }
 
     private void AddResolvedMainStageObject(GameObject stageObject)
@@ -1594,6 +1632,27 @@ public class GameplayPickupManager : NetworkBehaviour
         if (stageObject != null && !resolvedMainStageObjects.Contains(stageObject))
         {
             resolvedMainStageObjects.Add(stageObject);
+        }
+    }
+
+    private void ResolveMainStageRuntime()
+    {
+        // Find the floor sampler on the configured main-stage root for player and gameplay-object placement.
+        activeMainStageRuntime = null;
+        for (int i = 0; i < resolvedMainStageObjects.Count; i++)
+        {
+            GameObject stageObject = resolvedMainStageObjects[i];
+            if (stageObject == null)
+            {
+                continue;
+            }
+
+            activeMainStageRuntime = stageObject.GetComponent<FinalMatchStageRuntime>() ??
+                stageObject.GetComponentInChildren<FinalMatchStageRuntime>(includeInactive: true);
+            if (activeMainStageRuntime != null)
+            {
+                return;
+            }
         }
     }
 
@@ -1632,50 +1691,85 @@ public class GameplayPickupManager : NetworkBehaviour
         }
     }
 
-    private void TeleportPlayersToFinalStage(FinalMatchRuleDefinition definition)
+    private void TeleportPlayersToMainStage()
     {
-        // Shuffle authored SpawnPoints once and assign each connected player a unique final-stage pose.
-        if (!IsServer || NetworkManager.Singleton == null || activeFinalStageRuntime == null)
+        // Start each main match from the configured stage's authored SpawnPoints when that stage supplies them.
+        if (activeMainStageRuntime == null)
         {
             return;
         }
 
-        activeFinalStageRuntime.CopySpawnPoints(finalStageSpawnPoints);
-        ShuffleTransforms(finalStageSpawnPoints);
-        reservedFinalStagePositions.Clear();
+        TeleportPlayersToStage(
+            activeMainStageRuntime,
+            DefaultStagePlayerSpawnMinimumSpacing,
+            "main");
+    }
+
+    private void TeleportPlayersToFinalStage(FinalMatchRuleDefinition definition)
+    {
+        // Place final-match participants through the same unique SpawnPoint assignment used by authored stages.
+        if (activeFinalStageRuntime == null)
+        {
+            return;
+        }
+
+        TeleportPlayersToStage(
+            activeFinalStageRuntime,
+            definition != null
+                ? definition.FallbackPlayerSpawnMinimumSpacing
+                : DefaultStagePlayerSpawnMinimumSpacing,
+            "final");
+    }
+
+    private void TeleportPlayersToStage(
+        FinalMatchStageRuntime stageRuntime,
+        float fallbackMinimumSpacing,
+        string stageLabel)
+    {
+        // Shuffle one stage's authored markers and assign each connected player a unique server-approved pose.
+        if (!IsServer || NetworkManager.Singleton == null || stageRuntime == null)
+        {
+            return;
+        }
+
+        stageRuntime.CopySpawnPoints(stageSpawnPoints);
+        ShuffleTransforms(stageSpawnPoints);
+        reservedStagePositions.Clear();
 
         List<ulong> participantIds = new(NetworkManager.Singleton.ConnectedClientsIds);
         for (int i = 0; i < participantIds.Count; i++)
         {
             Vector3 spawnPosition;
             Quaternion spawnRotation;
-            if (i < finalStageSpawnPoints.Count)
+            if (i < stageSpawnPoints.Count)
             {
-                Transform spawnPoint = finalStageSpawnPoints[i];
+                Transform spawnPoint = stageSpawnPoints[i];
                 spawnPosition = spawnPoint.position;
                 spawnRotation = spawnPoint.rotation;
             }
-            else if (activeFinalStageRuntime.TryGetRandomGroundPosition(
+            else if (stageRuntime.TryGetRandomGroundPosition(
                 0f,
-                reservedFinalStagePositions,
-                definition != null ? definition.FallbackPlayerSpawnMinimumSpacing : 4f,
+                reservedStagePositions,
+                fallbackMinimumSpacing,
                 out spawnPosition))
             {
                 spawnRotation = Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f);
             }
             else
             {
-                Debug.LogError($"[GameplayPickupManager] No unique final-stage spawn position for clientId={participantIds[i]}.");
+                Debug.LogError(
+                    $"[GameplayPickupManager] No unique {stageLabel}-stage spawn position " +
+                    $"for clientId={participantIds[i]}.");
                 continue;
             }
 
-            reservedFinalStagePositions.Add(spawnPosition);
+            reservedStagePositions.Add(spawnPosition);
             TeleportNetworkPlayer(participantIds[i], spawnPosition, spawnRotation);
         }
 
         Debug.Log(
-            $"[GameplayPickupManager] Final-stage players placed count={reservedFinalStagePositions.Count} " +
-            $"authoredSpawnPoints={finalStageSpawnPoints.Count}");
+            $"[GameplayPickupManager] {stageLabel}-stage players placed count={reservedStagePositions.Count} " +
+            $"authoredSpawnPoints={stageSpawnPoints.Count}");
     }
 
     private void RestorePlayersToMainStage()
@@ -1871,20 +1965,20 @@ public class GameplayPickupManager : NetworkBehaviour
             return false;
         }
 
-        reservedFinalStagePositions.Clear();
+        reservedStagePositions.Clear();
         foreach (KeyValuePair<int, BoxSlot> pair in boxSlots)
         {
             BoxSlot slot = pair.Value;
             if (slot != null && slot.Active && slot.FinalScoreBox)
             {
-                reservedFinalStagePositions.Add(slot.Position);
+                reservedStagePositions.Add(slot.Position);
             }
         }
 
         float minimumSpacing = definition != null ? definition.StatueMinimumSpacing : 5f;
         return activeFinalStageRuntime.TryGetRandomGroundPosition(
             boxGroundOffset,
-            reservedFinalStagePositions,
+            reservedStagePositions,
             minimumSpacing,
             out position);
     }
@@ -3622,6 +3716,7 @@ public class GameplayPickupManager : NetworkBehaviour
             return;
         }
 
+        FinalScores.Clear();
         foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
         {
             EnsureFinalStatueScoreEntry(clientId);
@@ -3633,6 +3728,7 @@ public class GameplayPickupManager : NetworkBehaviour
         // Award one objective point to the player who destroyed a final statue.
         EnsureFinalStatueScoreEntry(clientId);
         finalStatueBreakScores[clientId]++;
+        SetReplicatedFinalScore(clientId, finalStatueBreakScores[clientId]);
     }
 
     private void EnsureFinalStatueScoreEntry(ulong clientId)
@@ -3642,6 +3738,75 @@ public class GameplayPickupManager : NetworkBehaviour
         {
             finalStatueBreakScores.Add(clientId, 0);
         }
+
+        SetReplicatedFinalScore(clientId, finalStatueBreakScores[clientId]);
+    }
+
+    private void SetReplicatedFinalScore(ulong clientId, int score)
+    {
+        // Add or update one server-owned score entry replicated to every participant.
+        if (!IsServer || FinalScores == null)
+        {
+            return;
+        }
+
+        int index = FindFinalScoreIndex(clientId);
+        FinalMatchScoreEntry nextEntry = new()
+        {
+            ClientId = clientId,
+            Score = Mathf.Max(0, score)
+        };
+
+        if (index >= 0)
+        {
+            if (!FinalScores[index].Equals(nextEntry))
+            {
+                FinalScores[index] = nextEntry;
+            }
+
+            return;
+        }
+
+        FinalScores.Add(nextEntry);
+    }
+
+    private int FindFinalScoreIndex(ulong clientId)
+    {
+        // Find one player's entry in the replicated final-match score list.
+        if (FinalScores == null)
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < FinalScores.Count; i++)
+        {
+            if (FinalScores[i].ClientId == clientId)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    public bool TryGetLocalFinalScore(out int score)
+    {
+        // Read the replicated score belonging to this peer's local Netcode client.
+        score = 0;
+        NetworkManager manager = NetworkManager.Singleton;
+        if (manager == null || !manager.IsListening)
+        {
+            return false;
+        }
+
+        int index = FindFinalScoreIndex(manager.LocalClientId);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        score = FinalScores[index].Score;
+        return true;
     }
 
     private void CompleteFinalStatueBreakObjective(FinalMatchRuleDefinition definition)
@@ -4524,6 +4689,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private void OnClientConnected(ulong clientId)
     {
         // 새 클라이언트가 접속하면 현재 활성 아이템 상태를 뒤늦게 동기화.
+        EnsureFinalStatueScoreEntry(clientId);
         StartCoroutine(SyncPickupsAfterClientJoin());
     }
 
@@ -6327,11 +6493,34 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private Vector3 GetRandomSpawnPosition()
     {
-        // Inspector 범위 안에서 아이템 스폰 위치를 무작위로 생성.
+        // Prefer the active authored stage floor, then retain the legacy rectangular test-area fallback.
+        FinalMatchStageRuntime stageRuntime = ResolveActiveGameplayStageRuntime();
+        if (stageRuntime != null && stageRuntime.TryGetRandomGroundPosition(
+            Mathf.Max(0f, spawnY),
+            null,
+            0f,
+            out Vector3 stagePosition))
+        {
+            return stagePosition;
+        }
+
         return new Vector3(
             Random.Range(xRange.x, xRange.y),
             spawnY,
             Random.Range(zRange.x, zRange.y));
+    }
+
+    private FinalMatchStageRuntime ResolveActiveGameplayStageRuntime()
+    {
+        // Select the currently visible final or main stage sampler for server-side spawn placement.
+        if (activeFinalStageRuntime != null && activeFinalStageRuntime.gameObject.activeInHierarchy)
+        {
+            return activeFinalStageRuntime;
+        }
+
+        return activeMainStageRuntime != null && activeMainStageRuntime.gameObject.activeInHierarchy
+            ? activeMainStageRuntime
+            : null;
     }
 
     private static PlayerStatType GetRandomStatType()

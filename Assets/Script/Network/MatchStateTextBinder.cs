@@ -7,6 +7,7 @@ public class MatchStateTextBinder : MonoBehaviour
     [Header("Text Bindings")]
     [SerializeField] private TMP_Text stateText;
     [SerializeField] private TMP_Text remainingTimeText;
+    [SerializeField] private TMP_Text scoreText;
 
     [Header("Labels")]
     [SerializeField] private string offlineStateText = "State: Offline";
@@ -14,9 +15,11 @@ public class MatchStateTextBinder : MonoBehaviour
     [SerializeField] private string stateFormat = "State: {0}";
     [SerializeField] private string remainingTimeFormat = "{0:00}:{1:00}";
     [SerializeField] private string idleRemainingTimeText = "Remaining: --:--";
+    [SerializeField] private string finalScoreFormat = "Score: {0}";
 
     private string lastStateText;
     private string lastRemainingTimeText;
+    private string lastScoreText;
 
     private void OnEnable()
     {
@@ -43,12 +46,14 @@ public class MatchStateTextBinder : MonoBehaviour
         if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
         {
             SetTexts(offlineStateText, idleRemainingTimeText, force);
+            RefreshFinalScore(NetworkMatchState.Lobby, force);
             return;
         }
 
         if (controller == null || !controller.IsSpawned)
         {
             SetTexts(notReadyStateText, idleRemainingTimeText, force);
+            RefreshFinalScore(NetworkMatchState.Lobby, force);
             return;
         }
 
@@ -56,6 +61,7 @@ public class MatchStateTextBinder : MonoBehaviour
         string nextStateText = string.Format(stateFormat, GetDisplayName(state));
         string nextRemainingTimeText = BuildRemainingTimeText(state, controller.RemainingTime.Value);
         SetTexts(nextStateText, nextRemainingTimeText, force);
+        RefreshFinalScore(state, force);
     }
 
     private string BuildRemainingTimeText(NetworkMatchState state, float remainingTime)
@@ -87,6 +93,42 @@ public class MatchStateTextBinder : MonoBehaviour
 
         lastStateText = nextStateText;
         lastRemainingTimeText = nextRemainingTimeText;
+    }
+
+    private void RefreshFinalScore(NetworkMatchState state, bool force)
+    {
+        // Show the local player's replicated objective score only during the active final match.
+        if (scoreText == null)
+        {
+            return;
+        }
+
+        bool shouldShow = state == NetworkMatchState.FinalMatch;
+        if (scoreText.gameObject.activeSelf != shouldShow)
+        {
+            scoreText.gameObject.SetActive(shouldShow);
+        }
+
+        if (!shouldShow)
+        {
+            lastScoreText = null;
+            return;
+        }
+
+        int score = 0;
+        GameplayPickupManager scoreManager = GameplayPickupManager.Instance;
+        if (scoreManager != null)
+        {
+            scoreManager.TryGetLocalFinalScore(out score);
+        }
+
+        string nextScoreText = string.Format(finalScoreFormat, score);
+        if (force || lastScoreText != nextScoreText)
+        {
+            scoreText.text = nextScoreText;
+        }
+
+        lastScoreText = nextScoreText;
     }
 
     private static string GetDisplayName(NetworkMatchState state)
