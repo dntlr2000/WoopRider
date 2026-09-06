@@ -36,7 +36,7 @@ public class MatchStateController : NetworkBehaviour
         NetworkVariableWritePermission.Server);
 
     // 중도 이탈로 패배 처리된 플레이어 목록.
-    private readonly Dictionary<ulong, bool> defeatedByDisconnect = new();
+    private readonly MatchOutcomeTracker outcomeTracker = new();
     private readonly HashSet<ulong> pendingKickDisconnects = new();
     private int lastLoggedRemainingSecond = -1;
     private bool isDisbandingRoom;
@@ -263,42 +263,14 @@ public class MatchStateController : NetworkBehaviour
             return;
         }
 
-        defeatedByDisconnect[clientId] = true;
+        outcomeTracker.MarkDefeated(clientId);
         Debug.Log($"[MatchStateController] Client marked defeated by disconnect clientId={clientId}");
     }
 
     public List<ulong> ResolveWinners(IReadOnlyDictionary<ulong, int> scores)
     {
-        // 동점 허용 정책: 최고 점수자 전원을 우승자로 반환.
-        List<ulong> winners = new();
-
-        int topScore = int.MinValue;
-        foreach (KeyValuePair<ulong, int> pair in scores)
-        {
-            if (defeatedByDisconnect.ContainsKey(pair.Key))
-            {
-                continue;
-            }
-
-            if (pair.Value > topScore)
-            {
-                topScore = pair.Value;
-            }
-        }
-
-        foreach (KeyValuePair<ulong, int> pair in scores)
-        {
-            if (defeatedByDisconnect.ContainsKey(pair.Key))
-            {
-                continue;
-            }
-
-            if (pair.Value == topScore)
-            {
-                winners.Add(pair.Key);
-            }
-        }
-
+        // Delegate score policy while preserving the existing public entry point and result log.
+        List<ulong> winners = outcomeTracker.ResolveWinners(scores);
         Debug.Log($"[MatchStateController] Winner resolution complete winners={winners.Count}");
         return winners;
     }
@@ -500,7 +472,7 @@ public class MatchStateController : NetworkBehaviour
     private void InitializeGameLoopForNewMatch()
     {
         // 새 경기 시작 전에 이전 판의 승자/이탈자/타이머 로그 상태를 초기화.
-        defeatedByDisconnect.Clear();
+        outcomeTracker.Reset();
         pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
         FinalWinnerClientIds?.Clear();
@@ -510,7 +482,7 @@ public class MatchStateController : NetworkBehaviour
     private void ResetGameLoopForRoomIdle()
     {
         // 로비 복귀/룸 해산처럼 대기 상태로 돌아갈 때 경기 진행 정보를 초기화.
-        defeatedByDisconnect.Clear();
+        outcomeTracker.Reset();
         pendingKickDisconnects.Clear();
         FinalWinnerClientId.Value = NoWinnerClientId;
         FinalWinnerClientIds?.Clear();

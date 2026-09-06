@@ -112,10 +112,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private NetworkPlayerEquipmentState equipmentState;
     private Coroutine actionLockRoutine;
-    private ParticleSystem lowHealthSparkEffect;
-    private GameObject attackUpEffectObject;
-    private GameObject defenceUpEffectObject;
-    private GameObject speedUpEffectObject;
+    private readonly PlayerCombatEffects combatEffects = new();
     private ParticleSystem resolvedDefaultLowHealthSparkPrefab;
     private GameObject resolvedDefaultAttackUpEffectPrefab;
     private GameObject resolvedDefaultDefenceUpEffectPrefab;
@@ -1177,34 +1174,16 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void PlayOneShotEffect(GameObject effectPrefab, Vector3 position, Vector3 direction, Vector3 eulerOffset, float scale, float lifetime, string effectName)
     {
-        // Instantiate a temporary effect prefab, force it to play once, and clean it up after a short lifetime.
+        // Preserve hit-direction fallback while delegating the original particle creation policy.
         if (effectPrefab == null)
         {
             return;
         }
 
         Quaternion rotation = Quaternion.LookRotation(ResolveEffectDirection(direction), Vector3.up) * Quaternion.Euler(eulerOffset);
-        GameObject effectObject = Instantiate(effectPrefab, position, rotation);
-        effectObject.name = effectName;
-        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, scale);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, lifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, rotation, effectName,
+            scale, lifetime, OneShotEffectScaleMode.SetUniformScale, activateRoot: false);
     }
 
     private GameObject ResolveDamageHitEffectPrefab()
@@ -1279,7 +1258,7 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void UpdateLowHealthSparkEffect()
     {
-        // Show or hide the local red spark effect based on the replicated equipment health ratio.
+        // Keep the client-only health decision here and delegate playback of the tracked warning effect.
         if (!IsClient)
         {
             return;
@@ -1289,18 +1268,11 @@ public class NetworkPlayerCombatState : NetworkBehaviour
         if (shouldShowSpark)
         {
             EnsureLowHealthSparkEffect();
-            if (lowHealthSparkEffect != null && !lowHealthSparkEffect.isPlaying)
-            {
-                lowHealthSparkEffect.Play();
-            }
-
+            combatEffects.SetLowHealthSparkPlaying(true);
             return;
         }
 
-        if (lowHealthSparkEffect != null && lowHealthSparkEffect.isPlaying)
-        {
-            lowHealthSparkEffect.Stop(withChildren: true, ParticleSystemStopBehavior.StopEmittingAndClear);
-        }
+        combatEffects.SetLowHealthSparkPlaying(false);
     }
 
     private void UpdateBuffEffects()
@@ -1318,47 +1290,47 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void UpdateAttackBuffEffect()
     {
-        // Create or remove the attack-up effect based on the active attack buff flag.
+        // Preserve the replicated attack-buff decision and resource resolution while tracking presentation separately.
         if (ShouldShowAttackBuffEffect())
         {
-            attackUpEffectObject = EnsurePersistentBuffEffect(
-                attackUpEffectObject,
+            combatEffects.TrackAttackBuffEffect(EnsurePersistentBuffEffect(
+                combatEffects.AttackUpEffectObject,
                 ResolveAttackUpEffectPrefab(),
-                "AttackUpPersistentEffect");
+                "AttackUpPersistentEffect"));
             return;
         }
 
-        DestroyPersistentEffect(ref attackUpEffectObject);
+        combatEffects.DestroyAttackBuffEffect();
     }
 
     private void UpdateDamageReductionBuffEffect()
     {
-        // Create or remove the defense-up effect based on the active damage reduction buff flag.
+        // Preserve the replicated defense-buff decision and resource resolution while tracking presentation separately.
         if (ShouldShowDamageReductionBuffEffect())
         {
-            defenceUpEffectObject = EnsurePersistentBuffEffect(
-                defenceUpEffectObject,
+            combatEffects.TrackDefenceBuffEffect(EnsurePersistentBuffEffect(
+                combatEffects.DefenceUpEffectObject,
                 ResolveDefenceUpEffectPrefab(),
-                "DefenceUpPersistentEffect");
+                "DefenceUpPersistentEffect"));
             return;
         }
 
-        DestroyPersistentEffect(ref defenceUpEffectObject);
+        combatEffects.DestroyDefenceBuffEffect();
     }
 
     private void UpdateMoveSpeedBuffEffect()
     {
-        // Create or remove the speed-up effect based on the active movement buff flag.
+        // Preserve the replicated speed-buff decision and resource resolution while tracking presentation separately.
         if (ShouldShowMoveSpeedBuffEffect())
         {
-            speedUpEffectObject = EnsurePersistentBuffEffect(
-                speedUpEffectObject,
+            combatEffects.TrackSpeedBuffEffect(EnsurePersistentBuffEffect(
+                combatEffects.SpeedUpEffectObject,
                 ResolveSpeedUpEffectPrefab(),
-                "SpeedUpPersistentEffect");
+                "SpeedUpPersistentEffect"));
             return;
         }
 
-        DestroyPersistentEffect(ref speedUpEffectObject);
+        combatEffects.DestroySpeedBuffEffect();
     }
 
     private bool ShouldShowAttackBuffEffect()
@@ -1387,31 +1359,24 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private GameObject EnsurePersistentBuffEffect(GameObject effectObject, GameObject effectPrefab, string effectName)
     {
-        // Instantiate a looping buff VFX under the player so it follows the character while active.
+        // Keep the reuse guard and defer live transform reads until after the original prefab initialization.
         if (effectObject != null || effectPrefab == null)
         {
             return effectObject;
         }
 
         Transform effectParent = ResolveBuffEffectParent();
-        GameObject createdEffect = Instantiate(effectPrefab, effectParent);
-        createdEffect.name = effectName;
-        ApplyPersistentBuffEffectTransform(createdEffect.transform, effectParent);
-        ConfigurePersistentLoopingEffect(createdEffect);
-        return createdEffect;
+        return PlayerCombatEffects.CreatePersistentBuffEffect(
+            effectPrefab, effectParent, transform, () => buffEffectLocalOffset,
+            () => buffEffectLocalEulerAngles, () => buffEffectScale, effectName);
     }
 
     private void ApplyPersistentBuffEffectTransform(Transform effectTransform, Transform effectParent)
     {
-        // Place attack/defense buff effects lower on the player by default while still allowing anchor overrides.
-        if (effectTransform == null)
-        {
-            return;
-        }
-
-        effectTransform.localPosition = effectParent == transform ? buffEffectLocalOffset : Vector3.zero;
-        effectTransform.localRotation = Quaternion.Euler(buffEffectLocalEulerAngles);
-        effectTransform.localScale = Vector3.one * Mathf.Max(0.01f, buffEffectScale);
+        // Defer current inspector reads until their original root-versus-anchor transform assignments.
+        PlayerCombatEffects.ApplyAnchoredEffectTransform(
+            effectTransform, effectParent, transform, () => buffEffectLocalOffset,
+            () => buffEffectLocalEulerAngles, () => buffEffectScale);
     }
 
     private Transform ResolveBuffEffectParent()
@@ -1428,28 +1393,8 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void ConfigurePersistentLoopingEffect(GameObject effectObject)
     {
-        // Force particle children to loop so pickup effects can serve as persistent buff VFX.
-        if (effectObject == null)
-        {
-            return;
-        }
-
-        effectObject.SetActive(true);
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = true;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
+        // Delegate the existing root activation and looping particle restart sequence.
+        PlayerCombatEffects.ConfigurePersistentLoopingEffect(effectObject);
     }
 
     private bool ShouldShowLowHealthSpark()
@@ -1466,41 +1411,25 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void EnsureLowHealthSparkEffect()
     {
-        // Create the configured low-health VFX under the character-specific spark anchor.
-        if (lowHealthSparkEffect != null)
+        // Keep the instance and resolver guards while deferring settings until after prefab creation.
+        if (combatEffects.LowHealthSparkEffect != null)
         {
             return;
         }
 
         Transform sparkParent = ResolveLowHealthSparkParent();
         ParticleSystem sparkPrefab = ResolveLowHealthSparkPrefab();
-        if (sparkPrefab != null)
-        {
-            lowHealthSparkEffect = Instantiate(sparkPrefab, sparkParent);
-            lowHealthSparkEffect.name = "LowHealthRedSparkEffect";
-            ApplyLowHealthSparkTransform(lowHealthSparkEffect.transform, sparkParent);
-            return;
-        }
-
-        GameObject sparkObject = new("LowHealthRedSparkEffect");
-        sparkObject.transform.SetParent(sparkParent, false);
-        ApplyLowHealthSparkTransform(sparkObject.transform, sparkParent);
-
-        lowHealthSparkEffect = sparkObject.AddComponent<ParticleSystem>();
-        ConfigureLowHealthSparkEffect(lowHealthSparkEffect);
+        combatEffects.CreateLowHealthSparkEffect(
+            sparkPrefab, sparkParent, transform, () => lowHealthSparkLocalOffset,
+            () => lowHealthSparkLocalEulerAngles, () => lowHealthSparkScale, () => lowHealthSparkRate);
     }
 
     private void ApplyLowHealthSparkTransform(Transform sparkTransform, Transform sparkParent)
     {
-        // Apply character-specific VFX placement, direction, and size without editing the source effect prefab.
-        if (sparkTransform == null)
-        {
-            return;
-        }
-
-        sparkTransform.localPosition = sparkParent == transform ? lowHealthSparkLocalOffset : Vector3.zero;
-        sparkTransform.localRotation = Quaternion.Euler(lowHealthSparkLocalEulerAngles);
-        sparkTransform.localScale = Vector3.one * Mathf.Max(0.01f, lowHealthSparkScale);
+        // Read character-specific settings lazily at the original spark-transform assignment points.
+        PlayerCombatEffects.ApplyAnchoredEffectTransform(
+            sparkTransform, sparkParent, transform, () => lowHealthSparkLocalOffset,
+            () => lowHealthSparkLocalEulerAngles, () => lowHealthSparkScale);
     }
 
     private Transform ResolveLowHealthSparkParent()
@@ -1621,78 +1550,26 @@ public class NetworkPlayerCombatState : NetworkBehaviour
 
     private void ConfigureLowHealthSparkEffect(ParticleSystem sparkEffect)
     {
-        // Configure small red particles that pop around the damaged player at a steady warning rate.
-        ParticleSystem.MainModule main = sparkEffect.main;
-        main.loop = true;
-        main.playOnAwake = false;
-        main.simulationSpace = ParticleSystemSimulationSpace.Local;
-        main.startLifetime = new ParticleSystem.MinMaxCurve(0.25f, 0.55f);
-        main.startSpeed = new ParticleSystem.MinMaxCurve(1.2f, 3f);
-        main.startSize = new ParticleSystem.MinMaxCurve(0.035f, 0.08f);
-        main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.02f, 0f, 1f), new Color(1f, 0.35f, 0.1f, 1f));
-
-        ParticleSystem.EmissionModule emission = sparkEffect.emission;
-        emission.rateOverTime = Mathf.Max(0f, lowHealthSparkRate);
-
-        ParticleSystem.ShapeModule shape = sparkEffect.shape;
-        shape.shapeType = ParticleSystemShapeType.Sphere;
-        shape.radius = 0.55f;
-
-        ParticleSystem.ColorOverLifetimeModule colorOverLifetime = sparkEffect.colorOverLifetime;
-        colorOverLifetime.enabled = true;
-        Gradient fadeGradient = new();
-        fadeGradient.SetKeys(
-            new[]
-            {
-                new GradientColorKey(new Color(1f, 0.02f, 0f), 0f),
-                new GradientColorKey(new Color(1f, 0.35f, 0.1f), 1f)
-            },
-            new[]
-            {
-                new GradientAlphaKey(1f, 0f),
-                new GradientAlphaKey(0f, 1f)
-            });
-        colorOverLifetime.color = new ParticleSystem.MinMaxGradient(fadeGradient);
-
-        ParticleSystemRenderer renderer = sparkEffect.GetComponent<ParticleSystemRenderer>();
-        renderer.renderMode = ParticleSystemRenderMode.Billboard;
-        Shader particleShader = Shader.Find("Sprites/Default");
-        if (particleShader != null)
-        {
-            renderer.material = new Material(particleShader);
-        }
+        // Defer the warning-rate read to its original emission setup point without changing material policy.
+        PlayerCombatEffects.ConfigureLowHealthSparkEffect(sparkEffect, () => lowHealthSparkRate);
     }
 
     private void DestroyLowHealthSparkEffect()
     {
-        // Clean up the generated warning effect when the network player despawns.
-        if (lowHealthSparkEffect == null)
-        {
-            return;
-        }
-
-        Destroy(lowHealthSparkEffect.gameObject);
-        lowHealthSparkEffect = null;
+        // Forward the existing despawn cleanup request to the warning-instance owner.
+        combatEffects.DestroyLowHealthSparkEffect();
     }
 
     private void DestroyBuffEffects()
     {
-        // Remove persistent buff effects during despawn or full combat cleanup.
-        DestroyPersistentEffect(ref attackUpEffectObject);
-        DestroyPersistentEffect(ref defenceUpEffectObject);
-        DestroyPersistentEffect(ref speedUpEffectObject);
+        // Forward the existing despawn cleanup request for the three tracked buff effects.
+        combatEffects.DestroyBuffEffects();
     }
 
     private void DestroyPersistentEffect(ref GameObject effectObject)
     {
-        // Destroy a tracked persistent effect object and clear its reference.
-        if (effectObject == null)
-        {
-            return;
-        }
-
-        Destroy(effectObject);
-        effectObject = null;
+        // Preserve the existing helper contract while delegating destruction and reference clearing.
+        PlayerCombatEffects.DestroyPersistentEffect(ref effectObject);
     }
 
     private void TryBindLocalPlayerEquipment()

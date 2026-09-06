@@ -175,19 +175,6 @@ public class GameplayPickupManager : NetworkBehaviour
         public PenguinEnemyVisual VisualController;
     }
 
-    private readonly struct SuddenEventSelection
-    {
-        public readonly SuddenEventType EventType;
-        public readonly SuddenEventDefinition Definition;
-
-        public SuddenEventSelection(SuddenEventType eventType, SuddenEventDefinition definition)
-        {
-            // Carry the selected event type and optional data asset through activation.
-            EventType = eventType;
-            Definition = definition;
-        }
-    }
-
     private enum HookContactKind
     {
         None,
@@ -225,83 +212,125 @@ public class GameplayPickupManager : NetworkBehaviour
         }
     }
 
-    private interface IFinalMatchRuleHandler
+    private sealed class FinalMatchRuleActions : IFinalMatchRuleActions
     {
-        FinalMatchRuleType RuleType { get; }
-        void Start(FinalMatchRuleDefinition definition);
-        void ResolveOnTimer();
-        bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot);
-        void Stop();
+        private readonly GameplayPickupManager owner;
+
+        public FinalMatchRuleActions(GameplayPickupManager owner)
+        {
+            // Adapt the retained network and private slot operations for one rule session.
+            this.owner = owner;
+        }
+
+        public bool IsServer => owner.IsServer;
+        public bool HasMatch => owner.matchStateController != null;
+        public bool HasNetworkManager => NetworkManager.Singleton != null;
+        public IEnumerable<ulong> ConnectedClientIds => NetworkManager.Singleton.ConnectedClientsIds;
+
+        public void SpawnFirstObjective(FinalMatchRuleDefinition definition)
+        {
+            // Preserve the existing fallback slot resolver and first-objective spawn path.
+            owner.SpawnFinalObjective(owner.ResolveFinalObjectiveSlotIndex(definition));
+        }
+
+        public void SpawnStatues(FinalMatchRuleDefinition definition)
+        {
+            // Keep statue placement and private slot allocation on their existing owner.
+            owner.SpawnFinalStatueBreakBoxes(definition);
+        }
+
+        public void BreakStatueAndScheduleRespawn(int slotId, ulong attackerClientId, FinalMatchRuleDefinition definition)
+        {
+            // Preserve score, deactivation and coroutine ordering in the original break method.
+            owner.BreakFinalStatueBox(slotId, attackerClientId, definition);
+        }
+
+        public void ClearReplicatedScores()
+        {
+            // Mutate the same existing server-owned NetworkList at its original reset point.
+            owner.FinalScores.Clear();
+        }
+
+        public void PublishScore(ulong clientId, int score)
+        {
+            // Retain the original add/update and unchanged-value filtering for score replication.
+            owner.SetReplicatedFinalScore(clientId, score);
+        }
+
+        public void CompleteScoreObjective(IReadOnlyDictionary<ulong, int> scores, string context)
+        {
+            // Keep final winner network state and room progression on the match controller.
+            owner.matchStateController.CompleteFinalScoreObjective(scores, context);
+        }
     }
 
-    private sealed class FirstObjectivePickupFinalRuleHandler : IFinalMatchRuleHandler
+    private sealed class SuddenEventHost : ISuddenEventHost
     {
-        private readonly GameplayPickupManager manager;
+        private readonly GameplayPickupManager owner;
 
-        public FirstObjectivePickupFinalRuleHandler(GameplayPickupManager manager)
+        public SuddenEventHost(GameplayPickupManager owner)
         {
-            this.manager = manager;
+            // Bind the retained world, coroutine and RPC operations for one event coordinator.
+            this.owner = owner;
         }
 
-        public FinalMatchRuleType RuleType => FinalMatchRuleType.FirstObjectivePickup;
+        public bool IsServer => owner.IsServer;
+        public bool HasMatch => owner.matchStateController != null;
+        public NetworkMatchState MatchState => owner.matchStateController.State.Value;
+        public float RemainingTime => owner.matchStateController.RemainingTime.Value;
 
-        public void Start(FinalMatchRuleDefinition definition)
+        public Coroutine StartCoroutine(IEnumerator routine)
         {
-            manager.SpawnFinalObjective(manager.ResolveFinalObjectiveSlotIndex(definition));
+            // Keep timer execution, including a zero-delay first step, on the original MonoBehaviour.
+            return owner.StartCoroutine(routine);
         }
 
-        public void ResolveOnTimer()
+        public void StopCoroutine(Coroutine routine)
         {
+            // Cancel through the same MonoBehaviour that owns every existing event coroutine.
+            owner.StopCoroutine(routine);
         }
 
-        public bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot)
+        public void StartPenguins(PenguinSuddenEventDefinition definition)
         {
-            return false;
+            // Retain Penguin spawning, slot allocation and first movement decisions on the owner.
+            owner.StartPenguinEvent(definition);
         }
 
-        public void Stop()
+        public void StopPenguins()
         {
-        }
-    }
-
-    private sealed class BreakStatuesFinalRuleHandler : IFinalMatchRuleHandler
-    {
-        private readonly GameplayPickupManager manager;
-        private FinalMatchRuleDefinition activeDefinition;
-
-        public BreakStatuesFinalRuleHandler(GameplayPickupManager manager)
-        {
-            this.manager = manager;
+            // Retain Penguin death-timer cancellation and hiding on the original owner.
+            owner.StopPenguinEvent();
         }
 
-        public FinalMatchRuleType RuleType => FinalMatchRuleType.BreakStatues;
-
-        public void Start(FinalMatchRuleDefinition definition)
+        public void ApplyAutoFireUntil(float endTime)
         {
-            activeDefinition = definition;
-            manager.ResetFinalStatueBreakScores();
-            manager.SpawnFinalStatueBreakBoxes(activeDefinition);
+            // Preserve the current per-frame buff application and its source label.
+            NetworkPlayerCombatState.ApplyAutoFireBuffUntilForAll(endTime, "sudden-event");
         }
 
-        public void ResolveOnTimer()
+        public void ShowNotice(string title, float duration)
         {
-            manager.CompleteFinalStatueBreakObjective(activeDefinition);
+            // Preserve the original optional match-controller notice dispatch.
+            owner.matchStateController?.ShowNoticeToAll(title, duration);
         }
 
-        public bool TryHandleBoxBroken(int slotId, ulong attackerClientId, BoxSlot slot)
+        public void PlayWarning()
         {
-            if (slot == null || !slot.FinalScoreBox)
-            {
-                return false;
-            }
-
-            manager.BreakFinalStatueBox(slotId, attackerClientId, activeDefinition);
-            return true;
+            // Send the original warning RPC from the unchanged NetworkBehaviour.
+            owner.PlaySuddenEventWarningClientRpc();
         }
 
-        public void Stop()
+        public void PlayBgm(SuddenEventType eventType)
         {
-            activeDefinition = null;
+            // Send the original event-music RPC without changing its payload or audience.
+            owner.PlaySuddenEventBgmClientRpc(eventType);
+        }
+
+        public void StopBgm(bool revealBaseBgm)
+        {
+            // Send the original stop-music RPC with the coordinator's unchanged fade decision.
+            owner.StopSuddenEventBgmClientRpc(revealBaseBgm);
         }
     }
 
@@ -604,7 +633,6 @@ public class GameplayPickupManager : NetworkBehaviour
     private readonly Dictionary<int, PickupSlot> slots = new();
     private readonly Dictionary<int, BoxSlot> boxSlots = new();
     private readonly Dictionary<int, PenguinSlot> penguinSlots = new();
-    private readonly Dictionary<ulong, int> finalStatueBreakScores = new();
     private readonly Dictionary<ulong, PlayerStageSnapshot> preFinalPlayerTransforms = new();
     private readonly Dictionary<ulong, float> nextHookRequestTimes = new();
     private readonly List<GameObject> resolvedMainStageObjects = new();
@@ -616,16 +644,13 @@ public class GameplayPickupManager : NetworkBehaviour
     private float nextLocalRequestTime;
     private int nextHookVisualId;
     private int nextLootPickupSlotId;
-    private Coroutine suddenEventRoutine;
-    private SuddenEventType activeSuddenEvent = SuddenEventType.None;
+    private SuddenEventCoordinator suddenEventCoordinator;
     private PenguinSuddenEventDefinition activePenguinEventDefinition;
-    private FinalMatchRuleDefinition activeFinalMatchRuleDefinition;
-    private IFinalMatchRuleHandler activeFinalMatchRuleHandler;
+    private FinalMatchRuleSession finalMatchRuleSession;
     private FinalMatchStageRuntime activeMainStageRuntime;
     private GameObject activeFinalStageInstance;
     private FinalMatchStageRuntime activeFinalStageRuntime;
     private string activeFinalStageRuleId;
-    private float activeSuddenEventEndTime;
     private float nextPenguinNetworkSyncTime;
     private ParticleSystem resolvedDefaultEquipmentSparkPrefab;
     private GameObject resolvedDefaultStatBuffEffectPrefab;
@@ -679,6 +704,8 @@ public class GameplayPickupManager : NetworkBehaviour
         }
 
         Instance = this;
+        finalMatchRuleSession = new FinalMatchRuleSession(new FinalMatchRuleActions(this), ResolveFinalMatchRuleDefinition);
+        suddenEventCoordinator = new SuddenEventCoordinator(new SuddenEventHost(this), ReadSuddenEventSettings);
         ResolveMainStageObjects();
     }
 
@@ -828,296 +855,41 @@ public class GameplayPickupManager : NetworkBehaviour
         }
     }
 
+    private SuddenEventSettings ReadSuddenEventSettings()
+    {
+        // Expose live serialized event values without moving fields or changing array and asset references.
+        return new SuddenEventSettings(suddenEventsEnabled, suddenEventStartDelay, suddenEventDuration,
+            loadSuddenEventDefinitionsFromResources, suddenEventDefinitions, fallbackSuddenEventTypes);
+    }
+
     private void StartSuddenEventSchedule()
     {
-        // Start the one-shot sudden event timer for the current main match.
-        StopSuddenEventSchedule();
-        if (!suddenEventsEnabled)
-        {
-            return;
-        }
-
-        suddenEventRoutine = StartCoroutine(TriggerSuddenEventAfterDelay(Mathf.Max(0f, suddenEventStartDelay)));
+        // Start the separately owned event lifecycle at the original main-match boundary.
+        suddenEventCoordinator.StartSchedule();
     }
 
     private void StopSuddenEventSchedule()
     {
-        // Stop pending or active sudden event state when the main match ends or the manager despawns.
-        if (suddenEventRoutine != null)
-        {
-            StopCoroutine(suddenEventRoutine);
-            suddenEventRoutine = null;
-        }
-
-        bool shouldLetMatchStateFadeAudio = matchStateController != null &&
-            matchStateController.State.Value == NetworkMatchState.FinalTransition;
-        if (IsServer && activeSuddenEvent != SuddenEventType.None && !shouldLetMatchStateFadeAudio)
-        {
-            StopSuddenEventBgmClientRpc(revealBaseBgm: false);
-        }
-
-        StopPenguinEvent();
-        activeSuddenEvent = SuddenEventType.None;
-        activeSuddenEventEndTime = 0f;
-    }
-
-    private IEnumerator TriggerSuddenEventAfterDelay(float delay)
-    {
-        // Wait from main-match start, then activate one random enabled sudden event.
-        if (delay > 0f)
-        {
-            yield return new WaitForSeconds(delay);
-        }
-
-        suddenEventRoutine = null;
-        if (!ShouldTriggerSuddenEvent())
-        {
-            yield break;
-        }
-
-        ActivateSuddenEvent(ChooseRandomSuddenEvent());
-    }
-
-    private bool ShouldTriggerSuddenEvent()
-    {
-        // Confirm sudden events are still enabled and the game is still in the main match.
-        return IsServer &&
-            suddenEventsEnabled &&
-            matchStateController != null &&
-            matchStateController.State.Value == NetworkMatchState.MatchMain;
-    }
-
-    private SuddenEventSelection ChooseRandomSuddenEvent()
-    {
-        // Choose a weighted event definition first, then fall back to simple event ids.
-        List<SuddenEventDefinition> definitions = ResolveSuddenEventDefinitions();
-        if (HasAnySuddenEventDefinition(definitions))
-        {
-            return TryChooseDefinitionSuddenEvent(definitions, out SuddenEventSelection definitionSelection)
-                ? definitionSelection
-                : new SuddenEventSelection(SuddenEventType.None, null);
-        }
-
-        return ChooseFallbackSuddenEvent();
-    }
-
-    private bool TryChooseDefinitionSuddenEvent(List<SuddenEventDefinition> definitions, out SuddenEventSelection selection)
-    {
-        // Choose from ScriptableObject definitions so larger event lists can be edited as data assets.
-        selection = default;
-        float totalWeight = 0f;
-        for (int i = 0; i < definitions.Count; i++)
-        {
-            SuddenEventDefinition definition = definitions[i];
-            if (IsUsableSuddenEventDefinition(definition))
-            {
-                totalWeight += Mathf.Max(0f, definition.Weight);
-            }
-        }
-
-        if (totalWeight <= 0f)
-        {
-            return false;
-        }
-
-        float roll = Random.Range(0f, totalWeight);
-        for (int i = 0; i < definitions.Count; i++)
-        {
-            SuddenEventDefinition definition = definitions[i];
-            if (!IsUsableSuddenEventDefinition(definition))
-            {
-                continue;
-            }
-
-            roll -= Mathf.Max(0f, definition.Weight);
-            if (roll <= 0f)
-            {
-                selection = new SuddenEventSelection(definition.EventType, definition);
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool HasAnySuddenEventDefinition(List<SuddenEventDefinition> definitions)
-    {
-        // Treat assigned or resource-loaded definitions as the authoritative event list.
-        if (definitions == null)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < definitions.Count; i++)
-        {
-            if (definitions[i] != null)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private List<SuddenEventDefinition> ResolveSuddenEventDefinitions()
-    {
-        // Combine inspector-assigned definitions and optional Resources/SuddenEvents assets.
-        List<SuddenEventDefinition> definitions = new();
-        if (suddenEventDefinitions != null)
-        {
-            definitions.AddRange(suddenEventDefinitions);
-        }
-
-        if (loadSuddenEventDefinitionsFromResources)
-        {
-            definitions.AddRange(Resources.LoadAll<SuddenEventDefinition>("SuddenEvents"));
-        }
-
-        return definitions;
-    }
-
-    private static bool IsUsableSuddenEventDefinition(SuddenEventDefinition definition)
-    {
-        // Accept enabled definitions with a known event type and positive random weight.
-        return definition != null &&
-            definition.EnabledInPool &&
-            definition.EventType != SuddenEventType.None &&
-            definition.Weight > 0f;
-    }
-
-    private SuddenEventSelection ChooseFallbackSuddenEvent()
-    {
-        // Preserve current behavior when no ScriptableObject event definitions exist yet.
-        if (fallbackSuddenEventTypes == null || fallbackSuddenEventTypes.Length == 0)
-        {
-            return new SuddenEventSelection(SuddenEventType.EndlessAutoFire, null);
-        }
-
-        for (int attempts = 0; attempts < fallbackSuddenEventTypes.Length; attempts++)
-        {
-            SuddenEventType candidate = fallbackSuddenEventTypes[Random.Range(0, fallbackSuddenEventTypes.Length)];
-            if (candidate != SuddenEventType.None)
-            {
-                return new SuddenEventSelection(candidate, null);
-            }
-        }
-
-        return new SuddenEventSelection(SuddenEventType.EndlessAutoFire, null);
-    }
-
-    private void ActivateSuddenEvent(SuddenEventSelection selection)
-    {
-        // Activate the selected event for the configured duration and notify all players.
-        SuddenEventType eventKind = selection.EventType;
-        if (eventKind == SuddenEventType.None)
-        {
-            return;
-        }
-
-        float duration = ResolveSuddenEventDuration(selection.Definition);
-        if (duration <= 0f)
-        {
-            return;
-        }
-
-        activeSuddenEvent = eventKind;
-        activeSuddenEventEndTime = Time.time + duration;
-
-        if (eventKind == SuddenEventType.PenguinFeast)
-        {
-            StartPenguinEvent(selection.Definition as PenguinSuddenEventDefinition);
-        }
-
-        string title = ResolveSuddenEventTitle(selection);
-        matchStateController?.ShowNoticeToAll(title, 4f);
-        PlaySuddenEventWarningClientRpc();
-        PlaySuddenEventBgmClientRpc(eventKind);
-        Debug.Log($"[GameplayPickupManager] Sudden event started kind={eventKind} duration={duration:0.0}s title={title}");
-        UpdateActiveSuddenEvent();
-    }
-
-    private float ResolveSuddenEventDuration(SuddenEventDefinition definition)
-    {
-        // Keep sudden events inside the remaining main-match window.
-        float configuredDuration = Mathf.Max(0f, definition != null
-            ? definition.ResolveDuration(suddenEventDuration)
-            : suddenEventDuration);
-        if (matchStateController == null)
-        {
-            return configuredDuration;
-        }
-
-        float remainingMainTime = Mathf.Max(0f, matchStateController.RemainingTime.Value);
-        return remainingMainTime > 0f ? Mathf.Min(configuredDuration, remainingMainTime) : configuredDuration;
-    }
-
-    private static string ResolveSuddenEventTitle(SuddenEventSelection selection)
-    {
-        // Convert event ids into temporary player-facing notice titles.
-        if (selection.Definition != null && !string.IsNullOrWhiteSpace(selection.Definition.Title))
-        {
-            return selection.Definition.Title;
-        }
-
-        return selection.EventType switch
-        {
-            SuddenEventType.EndlessAutoFire => "자동 발사가 멈춰지지 않는다!",
-            SuddenEventType.MixedStatueLoot => "석상의 내용물이 제각각이다!",
-            SuddenEventType.PenguinFeast => "펭귄들이 아이템을 먹고 뚱뚱해졌다!",
-            _ => "돌발 이벤트 발생!"
-        };
+        // Stop the event lifecycle through the original match and network-despawn call sites.
+        suddenEventCoordinator.StopSchedule();
     }
 
     private void UpdateActiveSuddenEvent()
     {
-        // Tick active sudden events and apply any repeating effects they need.
-        if (activeSuddenEvent == SuddenEventType.None)
-        {
-            return;
-        }
-
-        if (!IsSuddenEventActive())
-        {
-            ClearActiveSuddenEvent();
-            return;
-        }
-
-        if (activeSuddenEvent == SuddenEventType.EndlessAutoFire)
-        {
-            NetworkPlayerCombatState.ApplyAutoFireBuffUntilForAll(activeSuddenEventEndTime, "sudden-event");
-        }
+        // Tick event policy before the original Penguin update and pickup scan.
+        suddenEventCoordinator.Tick();
     }
 
     private bool IsSuddenEventActive()
     {
-        // Check whether the current sudden event should still affect main-match gameplay.
-        return IsServer &&
-            suddenEventsEnabled &&
-            matchStateController != null &&
-            matchStateController.State.Value == NetworkMatchState.MatchMain &&
-            Time.time < activeSuddenEventEndTime;
+        // Read the coordinator's existing authority, match-state and expiration checks.
+        return suddenEventCoordinator.IsActive();
     }
 
     private bool IsMixedBoxLootSuddenEventActive()
     {
-        // Mixed statue loot only affects boxes while that sudden event is active.
-        return activeSuddenEvent == SuddenEventType.MixedStatueLoot && IsSuddenEventActive();
-    }
-
-    private void ClearActiveSuddenEvent()
-    {
-        // Clear local event state once the event expires or the main match ends.
-        if (activeSuddenEvent != SuddenEventType.None)
-        {
-            Debug.Log($"[GameplayPickupManager] Sudden event ended kind={activeSuddenEvent}");
-            bool revealBaseBgm = matchStateController != null &&
-                matchStateController.State.Value == NetworkMatchState.MatchMain;
-            StopSuddenEventBgmClientRpc(revealBaseBgm);
-        }
-
-        StopPenguinEvent();
-        activeSuddenEvent = SuddenEventType.None;
-        activeSuddenEventEndTime = 0f;
+        // Keep box loot selection coupled only to the current event's active mixed-loot flag.
+        return suddenEventCoordinator.IsMixedBoxLootActive;
     }
 
     private void StartPenguinEvent(PenguinSuddenEventDefinition definition)
@@ -1175,7 +947,7 @@ public class GameplayPickupManager : NetworkBehaviour
     private void UpdatePenguinEvent(float deltaTime)
     {
         // Advance simple random roaming on the server and periodically replicate compact transform samples.
-        if (activeSuddenEvent != SuddenEventType.PenguinFeast || !IsSuddenEventActive())
+        if (suddenEventCoordinator.ActiveEventType != SuddenEventType.PenguinFeast || !IsSuddenEventActive())
         {
             return;
         }
@@ -1418,13 +1190,13 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void StartFinalMatchObjective()
     {
-        // Use the rule prepared during transition so stage, timer, and objective always stay in sync.
+        // Prepare the original stage flow before starting the separately owned rule session.
         EnsureFinalMatchStagePrepared();
-        activeFinalMatchRuleHandler = CreateFinalMatchRuleHandler(activeFinalMatchRuleDefinition);
-        activeFinalMatchRuleHandler.Start(activeFinalMatchRuleDefinition);
+        finalMatchRuleSession.StartSelectedRule();
 
-        string ruleId = activeFinalMatchRuleDefinition != null ? activeFinalMatchRuleDefinition.RuleId : "fallback";
-        Debug.Log($"[GameplayPickupManager] Final match objective started rule={activeFinalMatchRuleHandler.RuleType} ruleId={ruleId}");
+        FinalMatchRuleDefinition definition = finalMatchRuleSession.SelectedDefinition;
+        string ruleId = definition != null ? definition.RuleId : "fallback";
+        Debug.Log($"[GameplayPickupManager] Final match objective started rule={finalMatchRuleSession.ActiveRuleType} ruleId={ruleId}");
     }
 
     public void ResolveFinalMatchOnTimer()
@@ -1435,56 +1207,41 @@ public class GameplayPickupManager : NetworkBehaviour
             return;
         }
 
-        activeFinalMatchRuleHandler?.ResolveOnTimer();
+        finalMatchRuleSession.ResolveOnTimer();
     }
 
     private void StopFinalMatchObjective(bool clearPreparedRule)
     {
-        // Stop the active rule handler while optionally retaining its stage data through the Result state.
-        activeFinalMatchRuleHandler?.Stop();
-        activeFinalMatchRuleHandler = null;
-        if (clearPreparedRule)
-        {
-            activeFinalMatchRuleDefinition = null;
-        }
+        // Stop rule-local state while preserving the original selected-stage retention policy.
+        finalMatchRuleSession.Stop(clearPreparedRule);
     }
 
     public float ResolveFinalMatchDuration(float fallbackDuration)
     {
-        // Use the already selected transition rule so random rule selection cannot change before FinalMatch.
-        FinalMatchRuleDefinition definition = activeFinalMatchRuleDefinition;
-        if (definition == null)
-        {
-            definition = ResolveFinalMatchRuleDefinition();
-            activeFinalMatchRuleDefinition = definition;
-        }
-
-        return definition != null ? definition.ResolveDuration(fallbackDuration) : Mathf.Max(0f, fallbackDuration);
+        // Reuse the rule session's original null-only selection and timer fallback policy.
+        return finalMatchRuleSession.ResolveDuration(fallbackDuration);
     }
 
     private void PrepareFinalMatchStage()
     {
         // Select one final rule, replace the main stage, and place every participant before FinalMatch begins.
         CaptureMainStagePlayerTransforms();
-        activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
-        if (!ActivateFinalMatchStage(activeFinalMatchRuleDefinition))
+        finalMatchRuleSession.SelectForTransition();
+        if (!ActivateFinalMatchStage(finalMatchRuleSession.SelectedDefinition))
         {
             Debug.LogWarning("[GameplayPickupManager] Final stage preparation failed; players remain on the main stage.");
             return;
         }
 
-        TeleportPlayersToFinalStage(activeFinalMatchRuleDefinition);
+        TeleportPlayersToFinalStage(finalMatchRuleSession.SelectedDefinition);
     }
 
     private void EnsureFinalMatchStagePrepared()
     {
         // Recover safely when a test jumps directly to FinalMatch without passing through FinalTransition.
-        if (activeFinalMatchRuleDefinition == null)
-        {
-            activeFinalMatchRuleDefinition = ResolveFinalMatchRuleDefinition();
-        }
+        finalMatchRuleSession.EnsureSelectedDefinition();
 
-        if (activeFinalMatchRuleDefinition == null || activeFinalMatchRuleDefinition.StagePrefab == null)
+        if (finalMatchRuleSession.SelectedDefinition == null || finalMatchRuleSession.SelectedDefinition.StagePrefab == null)
         {
             return;
         }
@@ -1499,9 +1256,9 @@ public class GameplayPickupManager : NetworkBehaviour
             CaptureMainStagePlayerTransforms();
         }
 
-        if (ActivateFinalMatchStage(activeFinalMatchRuleDefinition))
+        if (ActivateFinalMatchStage(finalMatchRuleSession.SelectedDefinition))
         {
-            TeleportPlayersToFinalStage(activeFinalMatchRuleDefinition);
+            TeleportPlayersToFinalStage(finalMatchRuleSession.SelectedDefinition);
         }
     }
 
@@ -2087,19 +1844,6 @@ public class GameplayPickupManager : NetworkBehaviour
             definition.SelectionWeight > 0f;
     }
 
-    private IFinalMatchRuleHandler CreateFinalMatchRuleHandler(FinalMatchRuleDefinition definition)
-    {
-        // Keep runtime logic in handlers and data in ScriptableObjects.
-        FinalMatchRuleType ruleType = definition != null
-            ? definition.RuleType
-            : FinalMatchRuleType.FirstObjectivePickup;
-        return ruleType switch
-        {
-            FinalMatchRuleType.BreakStatues => new BreakStatuesFinalRuleHandler(this),
-            _ => new FirstObjectivePickupFinalRuleHandler(this)
-        };
-    }
-
     private int ResolveFinalObjectiveSlotIndex(FinalMatchRuleDefinition definition)
     {
         return definition != null ? definition.ObjectiveSlotIndex : DefaultFinalObjectiveSlotIndex;
@@ -2133,13 +1877,6 @@ public class GameplayPickupManager : NetworkBehaviour
     private Color ResolveFinalStatueTintColor(FinalMatchRuleDefinition definition)
     {
         return definition != null ? definition.StatueTintColor : Color.white;
-    }
-
-    private string ResolveFinalRuleContext(FinalMatchRuleDefinition definition)
-    {
-        return definition != null && !string.IsNullOrWhiteSpace(definition.RuleId)
-            ? definition.RuleId
-            : "final-rule";
     }
 
     private void ActivateStatPickup(int slotId, PlayerStatType statType, Vector3 position, bool respawnOnCollect = true)
@@ -3604,8 +3341,7 @@ public class GameplayPickupManager : NetworkBehaviour
     {
         // Convert a destroyed box into its pre-selected variant loot and schedule a replacement box.
         BoxSlot slot = GetOrCreateBoxSlot(slotId);
-        if (activeFinalMatchRuleHandler != null &&
-            activeFinalMatchRuleHandler.TryHandleBoxBroken(slotId, attackerClientId, slot))
+        if (finalMatchRuleSession.TryHandleBoxBroken(slotId, attackerClientId, slot != null && slot.FinalScoreBox))
         {
             return;
         }
@@ -3681,7 +3417,7 @@ public class GameplayPickupManager : NetworkBehaviour
             slot.RespawnRoutine = StartCoroutine(RespawnFinalStatueBoxAfterDelay(slotId, definition));
         }
 
-        int score = finalStatueBreakScores.TryGetValue(attackerClientId, out int currentScore) ? currentScore : 0;
+        int score = finalMatchRuleSession.GetScore(attackerClientId);
         Debug.Log($"[GameplayPickupManager] Final statue broken slot={slotId} attacker={attackerClientId} score={score}");
     }
 
@@ -3693,8 +3429,8 @@ public class GameplayPickupManager : NetworkBehaviour
         if (!IsServer ||
             matchStateController == null ||
             matchStateController.State.Value != NetworkMatchState.FinalMatch ||
-            activeFinalMatchRuleHandler == null ||
-            activeFinalMatchRuleHandler.RuleType != FinalMatchRuleType.BreakStatues)
+            !finalMatchRuleSession.HasActiveRule ||
+            finalMatchRuleSession.ActiveRuleType != FinalMatchRuleType.BreakStatues)
         {
             yield break;
         }
@@ -3709,37 +3445,20 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void ResetFinalStatueBreakScores()
     {
-        // Clear score state for the timed statue-breaking final objective.
-        finalStatueBreakScores.Clear();
-        if (!IsServer || NetworkManager.Singleton == null)
-        {
-            return;
-        }
-
-        FinalScores.Clear();
-        foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
-        {
-            EnsureFinalStatueScoreEntry(clientId);
-        }
+        // Reset rule-owned scores at the original lobby and match-start call sites.
+        finalMatchRuleSession.ResetScores();
     }
 
     private void RegisterFinalStatueBreakScore(ulong clientId)
     {
-        // Award one objective point to the player who destroyed a final statue.
-        EnsureFinalStatueScoreEntry(clientId);
-        finalStatueBreakScores[clientId]++;
-        SetReplicatedFinalScore(clientId, finalStatueBreakScores[clientId]);
+        // Award a rule-owned point at the original statue-break point before deactivation.
+        finalMatchRuleSession.RegisterStatueBreak(clientId);
     }
 
     private void EnsureFinalStatueScoreEntry(ulong clientId)
     {
-        // Include zero-score players so timeout resolution can detect ties cleanly.
-        if (!finalStatueBreakScores.ContainsKey(clientId))
-        {
-            finalStatueBreakScores.Add(clientId, 0);
-        }
-
-        SetReplicatedFinalScore(clientId, finalStatueBreakScores[clientId]);
+        // Publish the rule-owned score at the original reset and late-client-join call sites.
+        finalMatchRuleSession.EnsureScoreEntry(clientId);
     }
 
     private void SetReplicatedFinalScore(ulong clientId, int score)
@@ -3807,25 +3526,6 @@ public class GameplayPickupManager : NetworkBehaviour
 
         score = FinalScores[index].Score;
         return true;
-    }
-
-    private void CompleteFinalStatueBreakObjective(FinalMatchRuleDefinition definition)
-    {
-        // Resolve the winner from final statue scores when the final timer reaches zero.
-        if (!IsServer || matchStateController == null)
-        {
-            return;
-        }
-
-        if (NetworkManager.Singleton != null)
-        {
-            foreach (ulong clientId in NetworkManager.Singleton.ConnectedClientsIds)
-            {
-                EnsureFinalStatueScoreEntry(clientId);
-            }
-        }
-
-        matchStateController.CompleteFinalScoreObjective(finalStatueBreakScores, ResolveFinalRuleContext(definition));
     }
 
     private IEnumerator RespawnBoxItemAfterDelay(int slotId)
@@ -4721,9 +4421,9 @@ public class GameplayPickupManager : NetworkBehaviour
             SendPenguinVisualState(pair.Key, slot, snap: false, playDeath: slot.Visible && !slot.Alive);
         }
 
-        if (activeSuddenEvent != SuddenEventType.None && IsSuddenEventActive())
+        if (suddenEventCoordinator.ActiveEventType != SuddenEventType.None && IsSuddenEventActive())
         {
-            PlaySuddenEventBgmClientRpc(activeSuddenEvent);
+            PlaySuddenEventBgmClientRpc(suddenEventCoordinator.ActiveEventType);
         }
     }
 
@@ -5009,66 +4709,28 @@ public class GameplayPickupManager : NetworkBehaviour
 
     private void PlayPickupOneShotEffect(GameObject effectPrefab, Vector3 position, string effectName)
     {
-        // Instantiate a temporary pickup effect, force particle systems to play once, and clean it up.
+        // Read pickup scale after instantiation and lifetime after the existing root/particle activation.
         if (effectPrefab == null)
         {
             return;
         }
 
-        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(pickupEffectEulerOffset));
-        effectObject.name = $"Pickup{effectName}Effect";
-        effectObject.transform.localScale *= Mathf.Max(0.01f, pickupEffectScale);
-        effectObject.SetActive(true);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, pickupEffectLifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, Quaternion.Euler(pickupEffectEulerOffset), $"Pickup{effectName}Effect",
+            () => pickupEffectScale, () => pickupEffectLifetime, OneShotEffectScaleMode.MultiplyPrefabScale, activateRoot: true);
     }
 
     private void PlayBoxHitOneShotEffect(GameObject effectPrefab, Vector3 position)
     {
-        // Instantiate the box hit effect, force all child particles to play once, and clean it up.
+        // Read box-hit scale after instantiation and lifetime after the existing root/particle activation.
         if (effectPrefab == null)
         {
             return;
         }
 
-        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(boxHitEffectEulerOffset));
-        effectObject.name = "BoxStoneHitEffect";
-        effectObject.transform.localScale *= Mathf.Max(0.01f, boxHitEffectScale);
-        effectObject.SetActive(true);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, boxHitEffectLifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, Quaternion.Euler(boxHitEffectEulerOffset), "BoxStoneHitEffect",
+            () => boxHitEffectScale, () => boxHitEffectLifetime, OneShotEffectScaleMode.MultiplyPrefabScale, activateRoot: true);
     }
 
     private void PlayDirectionalHitOneShotEffect(
@@ -5080,7 +4742,7 @@ public class GameplayPickupManager : NetworkBehaviour
         float lifetime,
         string effectName)
     {
-        // Instantiate, orient, play, and clean up a shared directional impact effect.
+        // Preserve direction resolution before delegating the uniformly scaled directional impact.
         if (effectPrefab == null)
         {
             return;
@@ -5088,92 +4750,35 @@ public class GameplayPickupManager : NetworkBehaviour
 
         Vector3 resolvedDirection = ResolveDirectionalHitEffectDirection(hitDirection);
         Quaternion rotation = Quaternion.LookRotation(resolvedDirection, Vector3.up) * Quaternion.Euler(eulerOffset);
-        GameObject effectObject = Instantiate(effectPrefab, position, rotation);
-        effectObject.name = effectName;
-        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, scale);
-        effectObject.SetActive(true);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, lifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, rotation, effectName,
+            scale, lifetime, OneShotEffectScaleMode.SetUniformScale, activateRoot: true);
     }
 
     private void PlayPenguinDisappearOneShotEffect(GameObject effectPrefab, Vector3 position)
     {
-        // Instantiate, play, and clean up one Penguin disappearance effect.
+        // Read disappearance size after instantiation and lifetime after the existing particle activation.
         if (effectPrefab == null)
         {
             return;
         }
 
-        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(penguinDisappearEffectEulerOffset));
-        effectObject.name = "PenguinDisappearEffect";
-        effectObject.transform.localScale = Vector3.one * Mathf.Max(0.01f, penguinDisappearEffectScale);
-        effectObject.SetActive(true);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, penguinDisappearEffectLifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, Quaternion.Euler(penguinDisappearEffectEulerOffset), "PenguinDisappearEffect",
+            () => penguinDisappearEffectScale, () => penguinDisappearEffectLifetime, OneShotEffectScaleMode.SetUniformScale, activateRoot: true);
     }
 
     private void PlayBombBoxExplosionOneShotEffect(GameObject effectPrefab, Vector3 position)
     {
-        // Instantiate the bomb explosion effect, force child particles to play once, and clean it up.
+        // Read bomb-box size after instantiation and lifetime after the original root/particle activation.
         if (effectPrefab == null)
         {
             return;
         }
 
-        GameObject effectObject = Instantiate(effectPrefab, position, Quaternion.Euler(bombBoxExplosionEffectEulerOffset));
-        effectObject.name = "BombBoxExplosionEffect";
-        effectObject.transform.localScale *= Mathf.Max(0.01f, bombBoxExplosionEffectScale);
-        effectObject.SetActive(true);
-
-        ParticleSystem[] particleSystems = effectObject.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
-        for (int i = 0; i < particleSystems.Length; i++)
-        {
-            ParticleSystem particleSystem = particleSystems[i];
-            if (particleSystem == null)
-            {
-                continue;
-            }
-
-            particleSystem.gameObject.SetActive(true);
-            ParticleSystem.MainModule main = particleSystem.main;
-            main.loop = false;
-            particleSystem.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
-            particleSystem.Play(withChildren: false);
-        }
-
-        Destroy(effectObject, Mathf.Max(0.1f, bombBoxExplosionEffectLifetime));
+        OneShotEffectPlayer.PlayRestartedOneShot(
+            effectPrefab, position, Quaternion.Euler(bombBoxExplosionEffectEulerOffset), "BombBoxExplosionEffect",
+            () => bombBoxExplosionEffectScale, () => bombBoxExplosionEffectLifetime, OneShotEffectScaleMode.MultiplyPrefabScale, activateRoot: true);
     }
 
     private GameObject ResolvePickupEffectPrefab(PickupEffectKind effectKind)

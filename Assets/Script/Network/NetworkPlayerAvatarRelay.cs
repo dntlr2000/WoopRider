@@ -725,7 +725,7 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private void PlayCannonExplosionEffect(Vector3 position, float gameplayRadius, float effectScale, string effectResourcePath)
     {
-        // Instantiate the configured cannon explosion effect or a simple fallback flash.
+        // Keep the current resource fallback and delegate prefab-driven playback without restarting particles.
         GameObject explosionPrefab = ResolveCannonExplosionEffectPrefab(effectResourcePath);
         if (explosionPrefab == null)
         {
@@ -733,30 +733,13 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
             return;
         }
 
-        GameObject explosion = Instantiate(explosionPrefab, position, Quaternion.identity);
-        explosion.transform.localScale *= Mathf.Max(0.01f, effectScale);
-        Destroy(explosion, 4f);
+        OneShotEffectPlayer.SpawnAuthoredEffect(explosionPrefab, position, Quaternion.identity, effectScale, 4f);
     }
 
     private static void CreateFallbackCannonExplosion(Vector3 position, float gameplayRadius, float effectScale)
     {
-        // Keep cannon feedback visible even if the configured Resources effect is missing.
-        GameObject explosion = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        explosion.name = "FallbackCannonExplosion";
-        explosion.transform.position = position;
-        explosion.transform.localScale = Vector3.one * Mathf.Max(0.05f, gameplayRadius * 2f * effectScale);
-
-        if (explosion.TryGetComponent(out Collider explosionCollider))
-        {
-            explosionCollider.enabled = false;
-        }
-
-        if (explosion.TryGetComponent(out Renderer explosionRenderer))
-        {
-            explosionRenderer.material.color = new Color(1f, 0.45f, 0.05f, 0.65f);
-        }
-
-        Destroy(explosion, 0.35f);
+        // Delegate the unchanged primitive cannon flash, including collider and cleanup behavior.
+        OneShotEffectPlayer.CreateFallbackCannonExplosion(position, gameplayRadius, effectScale);
     }
 
     private EquipmentAttackSettings ResolveCurrentAttackSettings()
@@ -1247,57 +1230,15 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private bool TryFindWorldProjectileBlock(ProjectilePacket packet, out Vector3 hitPoint, out float hitDistance)
     {
-        // Find the nearest non-player collider that should make a cannon shell explode.
-        hitPoint = default;
-        hitDistance = float.MaxValue;
-        Vector3 direction = packet.TargetPoint - packet.Origin;
-        float distance = direction.magnitude;
-        if (distance <= 0.001f)
-        {
-            return false;
-        }
-
-        RaycastHit[] hits = Physics.SphereCastAll(
-            packet.Origin,
-            packet.Radius,
-            direction.normalized,
-            distance,
-            ~0,
-            QueryTriggerInteraction.Ignore);
-
-        for (int i = 0; i < hits.Length; i++)
-        {
-            RaycastHit hit = hits[i];
-            if (hit.collider == null || ShouldIgnoreWorldProjectileBlock(hit.collider))
-            {
-                continue;
-            }
-
-            if (hit.distance < hitDistance)
-            {
-                hitDistance = hit.distance;
-                hitPoint = hit.point;
-            }
-        }
-
-        return hitDistance < float.MaxValue;
+        // Delegate world-blocker geometry while retaining this relay's packet and owner context.
+        return ServerAttackTargetQuery.TryFindWorldProjectileBlock(
+            packet.Origin, packet.TargetPoint, packet.Radius, transform, out hitPoint, out hitDistance);
     }
 
     private bool ShouldIgnoreWorldProjectileBlock(Collider targetCollider)
     {
-        // Ignore player bodies in the generic world pass because player collisions are handled separately.
-        if (targetCollider == null)
-        {
-            return true;
-        }
-
-        Transform targetTransform = targetCollider.transform;
-        if (targetTransform == transform || targetTransform.IsChildOf(transform))
-        {
-            return true;
-        }
-
-        return targetCollider.GetComponentInParent<NetworkPlayerCombatState>() != null;
+        // Preserve the relay's collider-filter entry point and delegate the existing exclusion rules.
+        return ServerAttackTargetQuery.ShouldIgnoreWorldProjectileBlock(targetCollider, transform);
     }
 
     private void ExplodeCannonAt(Vector3 impactPoint, EquipmentAttackSettings attackSettings)
@@ -1439,75 +1380,10 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private bool TryFindProjectileTarget(ProjectilePacket packet, out NetworkPlayerCombatState targetCombatState, out Vector3 hitPoint, out float hitDistance)
     {
-        // Find the nearest damageable network player before any blocking non-player collider.
-        targetCombatState = null;
-        hitPoint = default;
-        hitDistance = float.MaxValue;
-        Vector3 direction = packet.TargetPoint - packet.Origin;
-        float distance = direction.magnitude;
-        if (distance <= 0.001f)
-        {
-            return false;
-        }
-
-        RaycastHit[] hits = Physics.SphereCastAll(
-            packet.Origin,
-            packet.Radius,
-            direction.normalized,
-            distance,
-            ~0,
-            QueryTriggerInteraction.Ignore);
-
-        float nearestTargetDistance = float.MaxValue;
-        float nearestBlockDistance = float.MaxValue;
-        Vector3 nearestTargetPoint = default;
-        for (int i = 0; i < hits.Length; i++)
-        {
-            RaycastHit hit = hits[i];
-            if (hit.collider == null)
-            {
-                continue;
-            }
-
-            NetworkPlayerCombatState hitCombatState = hit.collider.GetComponentInParent<NetworkPlayerCombatState>();
-            if (hitCombatState != null)
-            {
-                if (hitCombatState.OwnerClientId == OwnerClientId)
-                {
-                    continue;
-                }
-
-                if (hit.distance < nearestTargetDistance)
-                {
-                    nearestTargetDistance = hit.distance;
-                    nearestTargetPoint = hit.point;
-                    targetCombatState = hitCombatState;
-                }
-
-                continue;
-            }
-
-            if (hit.distance < nearestBlockDistance)
-            {
-                nearestBlockDistance = hit.distance;
-            }
-        }
-
-        if (TryFindFallbackTransformTarget(packet, direction.normalized, distance, nearestBlockDistance, ref targetCombatState, ref nearestTargetDistance, ref nearestTargetPoint))
-        {
-            hitPoint = nearestTargetPoint;
-            hitDistance = nearestTargetDistance;
-            return true;
-        }
-
-        if (targetCombatState != null && nearestTargetDistance <= nearestBlockDistance)
-        {
-            hitPoint = nearestTargetPoint;
-            hitDistance = nearestTargetDistance;
-            return true;
-        }
-
-        return false;
+        // Delegate player-hit queries without changing damage routing or the relay's packet type.
+        return ServerAttackTargetQuery.TryFindProjectileTarget(
+            packet.Origin, packet.TargetPoint, packet.Radius, OwnerClientId,
+            fallbackTargetRadius, fallbackTargetHeight, out targetCombatState, out hitPoint, out hitDistance);
     }
 
     private bool TryFindProjectileBoxTarget(ProjectilePacket packet, out int boxSlotId, out Vector3 hitPoint, out float hitDistance)
@@ -1578,60 +1454,24 @@ public class NetworkPlayerAvatarRelay : NetworkBehaviour
 
     private bool TryFindFallbackTransformTarget(ProjectilePacket packet, Vector3 direction, float distance, float nearestBlockDistance, ref NetworkPlayerCombatState targetCombatState, ref float nearestTargetDistance, ref Vector3 nearestTargetPoint)
     {
-        // Also test network avatar positions so host-hidden colliders or missing colliders can still be hit.
-        NetworkPlayerCombatState[] combatStates = FindObjectsByType<NetworkPlayerCombatState>(FindObjectsSortMode.None);
-        float radius = Mathf.Max(packet.Radius, fallbackTargetRadius);
-        for (int i = 0; i < combatStates.Length; i++)
-        {
-            NetworkPlayerCombatState candidate = combatStates[i];
-            if (candidate == null || !candidate.IsSpawned || candidate.OwnerClientId == OwnerClientId)
-            {
-                continue;
-            }
-
-            if (!TryIntersectTargetCapsule(packet.Origin, direction, distance, candidate.transform.position, radius, out float candidateDistance, out Vector3 candidatePoint))
-            {
-                continue;
-            }
-
-            if (candidateDistance < nearestTargetDistance && candidateDistance <= nearestBlockDistance)
-            {
-                nearestTargetDistance = candidateDistance;
-                nearestTargetPoint = candidatePoint;
-                targetCombatState = candidate;
-            }
-        }
-
-        return targetCombatState != null && nearestTargetDistance <= nearestBlockDistance;
+        // Preserve the fallback query entry point with the current owner and authored body dimensions.
+        return ServerAttackTargetQuery.TryFindFallbackTransformTarget(
+            packet.Origin, packet.Radius, direction, distance, nearestBlockDistance,
+            OwnerClientId, fallbackTargetRadius, fallbackTargetHeight,
+            ref targetCombatState, ref nearestTargetDistance, ref nearestTargetPoint);
     }
 
     private bool TryIntersectTargetCapsule(Vector3 origin, Vector3 direction, float distance, Vector3 targetPosition, float radius, out float hitDistance, out Vector3 hitPoint)
     {
-        // Approximate a player body with a short vertical capsule for collider-independent server hit checks.
-        hitDistance = 0f;
-        hitPoint = default;
-
-        Vector3 bottom = targetPosition;
-        Vector3 top = targetPosition + Vector3.up * Mathf.Max(0f, fallbackTargetHeight);
-        float bottomDistance = DistanceFromRaySegment(origin, direction, bottom, distance, out float bottomAlongRay);
-        float topDistance = DistanceFromRaySegment(origin, direction, top, distance, out float topAlongRay);
-
-        if (bottomDistance > radius && topDistance > radius)
-        {
-            return false;
-        }
-
-        hitDistance = bottomDistance <= topDistance ? bottomAlongRay : topAlongRay;
-        hitPoint = origin + direction * hitDistance;
-        return true;
+        // Delegate the existing body approximation using the relay's current fallback height.
+        return ServerAttackTargetQuery.TryIntersectTargetCapsule(
+            origin, direction, distance, targetPosition, radius, fallbackTargetHeight, out hitDistance, out hitPoint);
     }
 
     private static float DistanceFromRaySegment(Vector3 origin, Vector3 direction, Vector3 point, float maxDistance, out float alongRay)
     {
-        // Measure the shortest distance from a point to the finite projectile path.
-        alongRay = Mathf.Clamp(Vector3.Dot(point - origin, direction), 0f, maxDistance);
-        Vector3 closestPoint = origin + direction * alongRay;
-        return Vector3.Distance(point, closestPoint);
+        // Preserve the relay's geometry entry point and delegate its finite-segment distance calculation.
+        return ServerAttackTargetQuery.DistanceFromRaySegment(origin, direction, point, maxDistance, out alongRay);
     }
 
     private static bool TrySanitizeProjectile(Vector3 origin, Vector3 targetPoint, float speed, float radius, float lifeTime, out ProjectilePacket packet)

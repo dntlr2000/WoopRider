@@ -228,45 +228,14 @@ public class PlayerProjectileShooter : MonoBehaviour
 
     private Vector3 ResolveAimPoint(Ray aimRay, float range)
     {
-        // Choose the nearest non-self hit from the center-screen ray.
-        RaycastHit[] hits = Physics.RaycastAll(aimRay, range, aimMask, QueryTriggerInteraction.Ignore);
-        float nearestDistance = float.MaxValue;
-        Vector3 aimPoint = aimRay.GetPoint(range);
-
-        for (int i = 0; i < hits.Length; i++)
-        {
-            RaycastHit hit = hits[i];
-            if (ShouldIgnoreAimHit(hit))
-            {
-                continue;
-            }
-
-            if (hit.distance < nearestDistance)
-            {
-                nearestDistance = hit.distance;
-                aimPoint = hit.point;
-            }
-        }
-
-        return aimPoint;
+        // Delegate aim geometry while keeping the current input and cached controller in this component.
+        return PlayerAttackAimQuery.ResolveAimPoint(aimRay, range, aimMask, transform, controller);
     }
 
     private bool ShouldIgnoreAimHit(RaycastHit hit)
     {
-        // Ignore the local test character so the shoulder camera does not shoot into itself.
-        if (hit.collider == null)
-        {
-            return true;
-        }
-
-        Transform hitTransform = hit.collider.transform;
-        if (hitTransform == transform || hitTransform.IsChildOf(transform))
-        {
-            return true;
-        }
-
-        ThirdPersonController hitController = hit.collider.GetComponentInParent<ThirdPersonController>();
-        return hitController != null && hitController == controller;
+        // Preserve the component's self-hit filter entry point and delegate the existing exclusion rules.
+        return PlayerAttackAimQuery.ShouldIgnoreAimHit(hit, transform, controller);
     }
 
     private Vector3 ResolveMuzzlePosition()
@@ -277,9 +246,8 @@ public class PlayerProjectileShooter : MonoBehaviour
             return muzzleTransform.position;
         }
 
-        return ResolveBodyMuzzleBasePosition() +
-            transform.right * muzzleRightOffset +
-            transform.forward * muzzleForwardOffset;
+        return PlayerAttackAimQuery.ResolveMuzzlePosition(
+            ResolveBodyMuzzleBasePosition(), transform, muzzleRightOffset, muzzleForwardOffset);
     }
 
     private Vector3 ResolveBodyMuzzleBasePosition()
@@ -290,13 +258,7 @@ public class PlayerProjectileShooter : MonoBehaviour
             characterController = GetComponent<CharacterController>();
         }
 
-        if (characterController == null)
-        {
-            return transform.position + Vector3.up * muzzleHeight;
-        }
-
-        float clampedHeight = Mathf.Clamp(muzzleHeight, 0f, Mathf.Max(0.1f, characterController.height));
-        return transform.position + Vector3.up * clampedHeight;
+        return PlayerAttackAimQuery.ResolveBodyMuzzleBasePosition(transform, characterController, muzzleHeight);
     }
 
     private bool TrySendNetworkProjectile(Vector3 muzzlePosition, Vector3 aimPoint, float speed, float radius, float lifeTime, out bool usedNetworkPath)
